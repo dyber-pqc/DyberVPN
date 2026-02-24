@@ -3,6 +3,7 @@
 
 pub mod errors;
 pub mod handshake;
+pub mod hybrid_handshake;
 pub mod rate_limiter;
 
 mod session;
@@ -41,6 +42,12 @@ const MAX_QUEUE_DEPTH: usize = 256;
 /// number of sessions in the ring, better keep a PoT
 const N_SESSIONS: usize = 8;
 
+// Re-export hybrid handshake types
+pub use hybrid_handshake::{
+    HybridHandshakeState, PqKeyPair, HANDSHAKE_INIT_PQ, HANDSHAKE_INIT_PQ_SZ, HANDSHAKE_RESP_PQ,
+    HANDSHAKE_RESP_PQ_SZ, MLKEM_CIPHERTEXT_SIZE, MLKEM_PUBLIC_KEY_SIZE,
+};
+
 #[derive(Debug)]
 pub enum TunnResult<'a> {
     Done,
@@ -60,6 +67,8 @@ impl<'a> From<WireGuardError> for TunnResult<'a> {
 pub struct Tunn {
     /// The handshake currently in progress
     handshake: handshake::Handshake,
+    /// Hybrid PQ handshake state (for DyberVPN modes)
+    hybrid_state: Option<HybridHandshakeState>,
     /// The N_SESSIONS most recent sessions, index is session id modulo N_SESSIONS
     sessions: [Option<session::Session>; N_SESSIONS],
     /// Index of most recently used session
@@ -121,6 +130,9 @@ pub enum Packet<'a> {
     HandshakeResponse(HandshakeResponse<'a>),
     PacketCookieReply(PacketCookieReply<'a>),
     PacketData(PacketData<'a>),
+    // PQ handshake variants
+    HandshakeInitPq(hybrid_handshake::HandshakeInitPq<'a>),
+    HandshakeResponsePq(hybrid_handshake::HandshakeResponsePq<'a>),
 }
 
 impl Tunn {
@@ -158,6 +170,15 @@ impl Tunn {
                 counter: u64::from_le_bytes(src[8..16].try_into().unwrap()),
                 encrypted_encapsulated_packet: &src[16..],
             }),
+            // PQ handshake messages
+            (HANDSHAKE_INIT_PQ, HANDSHAKE_INIT_PQ_SZ) => {
+                Packet::HandshakeInitPq(hybrid_handshake::HandshakeInitPq::parse(src)
+                    .map_err(|_| WireGuardError::InvalidPacket)?)
+            }
+            (HANDSHAKE_RESP_PQ, HANDSHAKE_RESP_PQ_SZ) => {
+                Packet::HandshakeResponsePq(hybrid_handshake::HandshakeResponsePq::parse(src)
+                    .map_err(|_| WireGuardError::InvalidPacket)?)
+            }
             _ => return Err(WireGuardError::InvalidPacket),
         })
     }
@@ -209,6 +230,7 @@ impl Tunn {
                 index << 8,
                 preshared_key,
             ),
+            hybrid_state: None,
             sessions: Default::default(),
             current: Default::default(),
             tx_bytes: Default::default(),
@@ -221,6 +243,36 @@ impl Tunn {
                 Arc::new(RateLimiter::new(&static_public, PEER_HANDSHAKE_RATE_LIMIT))
             }),
         }
+    }
+
+    /// Create a new tunnel with hybrid PQ support
+    pub fn new_hybrid(
+        static_private: x25519::StaticSecret,
+        peer_static_public: x25519::PublicKey,
+        preshared_key: Option<[u8; 32]>,
+        persistent_keepalive: Option<u16>,
+        index: u32,
+        rate_limiter: Option<Arc<RateLimiter>>,
+        hybrid_state: HybridHandshakeState,
+    ) -> Self {
+        let mut tunn = Self::new(
+            static_private,
+            peer_static_public,
+            preshared_key,
+            persistent_keepalive,
+            index,
+            rate_limiter,
+        );
+        tunn.hybrid_state = Some(hybrid_state);
+        tunn
+    }
+
+    /// Check if this tunnel uses hybrid PQ mode
+    pub fn is_hybrid(&self) -> bool {
+        self.hybrid_state
+            .as_ref()
+            .map(|s| s.is_pq_enabled())
+            .unwrap_or(false)
     }
 
     /// Update the private key and clear existing sessions
@@ -311,6 +363,17 @@ impl Tunn {
             Packet::HandshakeResponse(p) => self.handle_handshake_response(p, dst),
             Packet::PacketCookieReply(p) => self.handle_cookie_reply(p),
             Packet::PacketData(p) => self.handle_data(p, dst),
+            // TODO: Implement PQ handshake handlers
+            Packet::HandshakeInitPq(p) => {
+                tracing::debug!("Received PQ handshake init from {}", p.sender_idx);
+                // For now, fall back to classic handshake
+                Err(WireGuardError::InvalidPacket)
+            }
+            Packet::HandshakeResponsePq(p) => {
+                tracing::debug!("Received PQ handshake response from {}", p.sender_idx);
+                // For now, fall back to classic handshake
+                Err(WireGuardError::InvalidPacket)
+            }
         }
         .unwrap_or_else(TunnResult::from)
     }

@@ -1,0 +1,38 @@
+# DyberVPN Server Configuration Example
+# /etc/dybervpn/server.toml
+
+[interface]
+# Classical WireGuard private key (base64) - REPLACE WITH YOUR OWN
+private_key = "WEFrZUtleUhlcmVGb3JUZXN0aW5nT25seQ=="
+
+# Post-quantum private key (base64, ML-KEM-768) - only needed for hybrid/pq-only modes
+# pq_private_key = "YOUR_PQ_PRIVATE_KEY_HERE"
+
+# UDP port to listen on
+listen_port = 51820
+
+# VPN interface address
+address = "10.0.0.1/24"
+
+# Operating mode: hybrid | pq-only | classic
+mode = "classic"
+
+# Optional: hardware acceleration
+[hardware]
+# auto | software | quac100
+backend = "auto"
+# QUAC 100 device path (auto-detected if "auto")
+# device = "/dev/quac0"
+
+# Peer configuration - uncomment and configure for each client
+# [[peer]]
+# Peer's classical public key
+# public_key = "PEER_PUBLIC_KEY_HERE"
+# Peer's post-quantum public key (required for hybrid/pq-only modes)
+# pq_public_key = "PEER_PQ_PUBLIC_KEY_HERE"
+# Allowed IP ranges for this peer
+# allowed_ips = "10.0.0.2/32"
+# Optional: peer endpoint
+# endpoint = "203.0.113.1:51820"
+# Optional: keepalive interval in seconds
+# persistent_keepalive = 25

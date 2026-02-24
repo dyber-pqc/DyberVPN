@@ -46,6 +46,9 @@ mock_instant = { version = "0.3", optional = true }
 socket2 = { version = "0.4.7", features = ["all"], optional = true }
 thiserror = { version = "1", optional = true }
 
+# DyberVPN PQ crypto
+dybervpn-protocol = { path = "../crates/dybervpn-protocol" }
+
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.25", default-features = false, features = [
     "time",

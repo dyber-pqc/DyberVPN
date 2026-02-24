@@ -1,0 +1,22 @@
+[package]
+name = "dybervpn-cli"
+description = "Command-line interface for DyberVPN"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "dybervpn"
+path = "src/main.rs"
+
+[dependencies]
+dybervpn-protocol = { path = "../dybervpn-protocol" }
+
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+x25519-dalek.workspace = true

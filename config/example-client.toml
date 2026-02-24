@@ -1,0 +1,35 @@
+# DyberVPN Client Configuration Example
+# /etc/dybervpn/client.toml
+
+[interface]
+# Classical WireGuard private key (base64) - REPLACE WITH YOUR OWN
+private_key = "V0dDbGllbnRLZXlIZXJlRm9yVGVzdGluZw=="
+
+# Post-quantum private key (base64, ML-KEM-768) - only needed for hybrid/pq-only modes
+# pq_private_key = "YOUR_PQ_PRIVATE_KEY_HERE"
+
+# VPN interface address
+address = "10.0.0.2/24"
+
+# Operating mode: hybrid | pq-only | classic
+mode = "classic"
+
+# DNS servers (optional)
+dns = ["10.0.0.1", "1.1.1.1"]
+
+# Server peer configuration
+[[peer]]
+# Server's classical public key - REPLACE WITH SERVER'S KEY
+public_key = "U2VydmVyUHVibGljS2V5SGVyZUZvclRlc3Q="
+
+# Server's post-quantum public key (required for hybrid/pq-only modes)
+# pq_public_key = "SERVER_PQ_PUBLIC_KEY_HERE"
+
+# Server endpoint
+endpoint = "vpn.example.com:51820"
+
+# Route all traffic through VPN
+allowed_ips = "0.0.0.0/0"
+
+# Keepalive to maintain NAT mappings
+persistent_keepalive = 25

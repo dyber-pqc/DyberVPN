@@ -1,10 +1,85 @@
 [workspace]
-members = ["boringtun", "boringtun-cli"]
+resolver = "2"
+members = [
+    "boringtun",                 # Original tunnel implementation
+    # "boringtun-cli",           # Skip for now - Unix only (daemonize)
+    "crates/dybervpn-protocol",  # New: PQC protocol layer
+    "crates/dybervpn-cli",       # New: DyberVPN CLI
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/dyberinc/dybervpn"
+authors = ["Dyber, Inc. <engineering@dyber.com>"]
+keywords = ["vpn", "wireguard", "post-quantum", "cryptography", "pqc"]
+categories = ["network-programming", "cryptography"]
+
+[workspace.dependencies]
+# Classical Cryptography (from BoringTun)
+x25519-dalek = { version = "2.0.1", features = ["reusable_secrets", "static_secrets"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+
+# Symmetric Crypto & AEAD
+ring = "0.17"
+chacha20poly1305 = "0.10.0-pre.1"
+aead = "0.5.0-pre.2"
+
+# Hashing
+blake2 = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
+hkdf = "0.12"
+
+# Encoding
+base64 = "0.13"
+hex = "0.4"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Async Runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# Error Handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Network
+socket2 = { version = "0.5", features = ["all"] }
+ip_network = "0.4"
+ip_network_table = "0.2"
+
+# Platform
+libc = "0.2"
+parking_lot = "0.12"
+
+# Testing
+mock_instant = "0.3"
+
+# Secure memory
+zeroize = { version = "1.7", features = ["derive"] }
+
+# PQC - ML-KEM (Kyber) implementation
+ml-kem = "0.2"
 
 [profile.release]
-lto = true        # Enable full link-time optimization.
-codegen-units = 1 # Use only 1 codegen-unit to enable full optimizations.
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
 
 [profile.bench]
-lto = true        # Enable full link-time optimization.
-codegen-units = 1 # Use only 1 codegen-unit to enable full optimizations.
+lto = true
+codegen-units = 1
