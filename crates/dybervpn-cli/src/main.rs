@@ -100,6 +100,45 @@ enum Commands {
         #[arg(short, long, default_value = "1000")]
         iterations: usize,
     },
+
+    /// Generate an ML-DSA-65 signing keypair for release/artifact signing
+    SignKeygen {
+        /// Output directory for the keypair files
+        #[arg(short, long, default_value = ".")]
+        output: PathBuf,
+
+        /// Key name prefix (creates <name>.mldsa.key and <name>.mldsa.pub)
+        #[arg(short, long, default_value = "release-signing")]
+        name: String,
+    },
+
+    /// Sign a file with ML-DSA-65 (post-quantum digital signature)
+    Sign {
+        /// File to sign
+        file: PathBuf,
+
+        /// Path to ML-DSA-65 private key (.mldsa.key)
+        #[arg(short, long)]
+        key: PathBuf,
+
+        /// Output signature file path (default: <file>.sig.mldsa)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Verify an ML-DSA-65 signature on a file
+    Verify {
+        /// File to verify
+        file: PathBuf,
+
+        /// Path to ML-DSA-65 public key (.mldsa.pub)
+        #[arg(short, long)]
+        key: PathBuf,
+
+        /// Signature file path (default: <file>.sig.mldsa)
+        #[arg(short, long)]
+        sig: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -127,6 +166,9 @@ fn main() -> Result<()> {
         Commands::Init { server, client, output } => cmd_init(server, client.as_deref(), &output),
         Commands::Version => cmd_version(),
         Commands::Benchmark { iterations } => cmd_benchmark(iterations),
+        Commands::SignKeygen { output, name } => cmd_sign_keygen(&output, &name),
+        Commands::Sign { file, key, output } => cmd_sign(&file, &key, output.as_deref()),
+        Commands::Verify { file, key, sig } => cmd_verify(&file, &key, sig.as_deref()),
     }
 }
 
@@ -1152,6 +1194,284 @@ fn cmd_benchmark(iterations: usize) -> Result<()> {
     println!();
     println!("Full hybrid handshake estimate: ~250-300 µs");
     println!("Full PQ-only handshake estimate: ~2-3 ms (includes ML-DSA)");
+    
+    Ok(())
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ML-DSA-65 Artifact Signing — Post-Quantum Code Signing
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Signature file format (.sig.mldsa):
+//   Bytes 0..9:    Magic "DYBERSIG\x01" (version 1)
+//   Bytes 9..41:   SHA-256 hash of the signed file
+//   Bytes 41..49:  Timestamp (Unix epoch, big-endian u64)
+//   Bytes 49..3358: ML-DSA-65 signature (3309 bytes) over bytes 0..49
+//
+// Total signature file size: 3358 bytes
+// ════════════════════════════════════════════════════════════════════════════
+
+const SIG_MAGIC: &[u8; 9] = b"DYBERSIG\x01";
+const SIG_FILE_SIZE: usize = 9 + 32 + 8 + 3309; // 3358 bytes
+
+/// Generate an ML-DSA-65 signing keypair
+fn cmd_sign_keygen(output: &Path, name: &str) -> Result<()> {
+    use dybervpn_protocol::types::mldsa65;
+    
+    let backend = select_backend();
+    
+    println!("Generating ML-DSA-65 signing keypair...");
+    println!("Algorithm: FIPS 204 (ML-DSA-65, Security Level 3)");
+    println!();
+    
+    let (pk, sk) = backend.mldsa_keygen()
+        .context("ML-DSA-65 key generation failed")?;
+    
+    // Validate sizes
+    assert_eq!(pk.as_bytes().len(), mldsa65::PUBLIC_KEY_SIZE);
+    assert_eq!(sk.as_bytes().len(), mldsa65::SECRET_KEY_SIZE);
+    
+    let sk_path = output.join(format!("{}.mldsa.key", name));
+    let pk_path = output.join(format!("{}.mldsa.pub", name));
+    
+    // Write private key (raw bytes)
+    fs::write(&sk_path, sk.as_bytes())
+        .with_context(|| format!("Failed to write private key to {}", sk_path.display()))?;
+    
+    // Set restrictive permissions on private key
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&sk_path, fs::Permissions::from_mode(0o600))?;
+    }
+    
+    // Write public key (raw bytes)
+    fs::write(&pk_path, pk.as_bytes())
+        .with_context(|| format!("Failed to write public key to {}", pk_path.display()))?;
+    
+    println!("Private key: {} ({} bytes)", sk_path.display(), mldsa65::SECRET_KEY_SIZE);
+    println!("Public key:  {} ({} bytes)", pk_path.display(), mldsa65::PUBLIC_KEY_SIZE);
+    println!();
+    println!("Public key fingerprint (SHA-256):");
+    
+    use sha2::{Sha256, Digest};
+    let fingerprint = Sha256::digest(pk.as_bytes());
+    let fp_hex = hex::encode(&fingerprint);
+    println!("  {}:{}", &fp_hex[..32], &fp_hex[32..]);
+    println!();
+    println!("\x1b[1;33m⚠  KEEP THE PRIVATE KEY SECURE.\x1b[0m");
+    println!("   Store it offline or in a hardware security module.");
+    println!("   The public key should be distributed with your releases.");
+    println!();
+    println!("Usage:");
+    println!("  Sign:   dybervpn sign <file> --key {}", sk_path.display());
+    println!("  Verify: dybervpn verify <file> --key {}", pk_path.display());
+    
+    Ok(())
+}
+
+/// Sign a file with ML-DSA-65
+fn cmd_sign(file: &Path, key_path: &Path, output: Option<&Path>) -> Result<()> {
+    use sha2::{Sha256, Digest};
+    use dybervpn_protocol::types::mldsa65;
+    use dybervpn_protocol::MlDsaSecretKey;
+    
+    let backend = select_backend();
+    
+    // Read private key
+    let sk_bytes = fs::read(key_path)
+        .with_context(|| format!("Failed to read private key: {}", key_path.display()))?;
+    
+    if sk_bytes.len() != mldsa65::SECRET_KEY_SIZE {
+        anyhow::bail!(
+            "Invalid private key size: {} bytes (expected {} for ML-DSA-65).\n\
+             Use 'dybervpn sign-keygen' to generate a valid signing keypair.",
+            sk_bytes.len(), mldsa65::SECRET_KEY_SIZE
+        );
+    }
+    
+    let sk = MlDsaSecretKey::from_bytes(&sk_bytes)
+        .context("Invalid ML-DSA-65 private key")?;
+    
+    // Read file to sign
+    let file_data = fs::read(file)
+        .with_context(|| format!("Failed to read file: {}", file.display()))?;
+    
+    let file_size = file_data.len();
+    
+    // Hash the file
+    let file_hash = Sha256::digest(&file_data);
+    
+    // Get timestamp
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    
+    // Build the message to sign: magic + hash + timestamp
+    let mut sign_message = Vec::with_capacity(9 + 32 + 8);
+    sign_message.extend_from_slice(SIG_MAGIC);
+    sign_message.extend_from_slice(&file_hash);
+    sign_message.extend_from_slice(&timestamp.to_be_bytes());
+    
+    assert_eq!(sign_message.len(), 49);
+    
+    // Sign with ML-DSA-65
+    eprintln!("Signing {} ({} bytes) with ML-DSA-65...", file.display(), file_size);
+    
+    let signature = backend.mldsa_sign(&sk, &sign_message)
+        .context("ML-DSA-65 signing failed")?;
+    
+    assert_eq!(signature.as_bytes().len(), mldsa65::SIGNATURE_SIZE);
+    
+    // Build signature file: message + signature
+    let mut sig_file = Vec::with_capacity(SIG_FILE_SIZE);
+    sig_file.extend_from_slice(&sign_message);     // 49 bytes
+    sig_file.extend_from_slice(signature.as_bytes()); // 3309 bytes
+    
+    assert_eq!(sig_file.len(), SIG_FILE_SIZE);
+    
+    // Write signature file
+    let sig_path = match output {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let mut p = file.as_os_str().to_owned();
+            p.push(".sig.mldsa");
+            PathBuf::from(p)
+        }
+    };
+    
+    fs::write(&sig_path, &sig_file)
+        .with_context(|| format!("Failed to write signature: {}", sig_path.display()))?;
+    
+    println!("\x1b[1;32m✓ Signed successfully\x1b[0m");
+    println!();
+    println!("  File:       {}", file.display());
+    println!("  Size:       {} bytes", file_size);
+    println!("  SHA-256:    {}", hex::encode(&file_hash));
+    println!("  Algorithm:  ML-DSA-65 (FIPS 204)");
+    println!("  Timestamp:  {}", chrono::DateTime::from_timestamp(timestamp as i64, 0)
+        .map(|dt| dt.to_rfc3339()).unwrap_or_else(|| timestamp.to_string()));
+    println!("  Signature:  {} ({} bytes)", sig_path.display(), SIG_FILE_SIZE);
+    println!();
+    println!("Verify with:");
+    println!("  dybervpn verify {} --key <public_key>.mldsa.pub", file.display());
+    
+    Ok(())
+}
+
+/// Verify an ML-DSA-65 signature on a file
+fn cmd_verify(file: &Path, key_path: &Path, sig_path: Option<&Path>) -> Result<()> {
+    use sha2::{Sha256, Digest};
+    use dybervpn_protocol::types::mldsa65;
+    use dybervpn_protocol::{MlDsaPublicKey, MlDsaSignature};
+    
+    let backend = select_backend();
+    
+    // Read public key
+    let pk_bytes = fs::read(key_path)
+        .with_context(|| format!("Failed to read public key: {}", key_path.display()))?;
+    
+    if pk_bytes.len() != mldsa65::PUBLIC_KEY_SIZE {
+        anyhow::bail!(
+            "Invalid public key size: {} bytes (expected {} for ML-DSA-65).\n\
+             Make sure you're using the .mldsa.pub file, not the private key.",
+            pk_bytes.len(), mldsa65::PUBLIC_KEY_SIZE
+        );
+    }
+    
+    let pk = MlDsaPublicKey::from_bytes(&pk_bytes)
+        .context("Invalid ML-DSA-65 public key")?;
+    
+    // Read signature file
+    let sig_file_path = match sig_path {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let mut p = file.as_os_str().to_owned();
+            p.push(".sig.mldsa");
+            PathBuf::from(p)
+        }
+    };
+    
+    let sig_data = fs::read(&sig_file_path)
+        .with_context(|| format!("Failed to read signature file: {}\n\
+            Looked for: {}\n\
+            Specify manually with --sig <path>", sig_file_path.display(), sig_file_path.display()))?;
+    
+    if sig_data.len() != SIG_FILE_SIZE {
+        anyhow::bail!(
+            "Invalid signature file size: {} bytes (expected {}).\n\
+             The file may be corrupted or not a DyberVPN signature.",
+            sig_data.len(), SIG_FILE_SIZE
+        );
+    }
+    
+    // Parse signature file
+    let magic = &sig_data[0..9];
+    if magic != SIG_MAGIC {
+        anyhow::bail!("Invalid signature file: bad magic bytes. Not a DyberVPN ML-DSA signature.");
+    }
+    
+    let stored_hash = &sig_data[9..41];
+    let timestamp_bytes: [u8; 8] = sig_data[41..49].try_into().unwrap();
+    let timestamp = u64::from_be_bytes(timestamp_bytes);
+    let sig_bytes = &sig_data[49..SIG_FILE_SIZE];
+    
+    let signature = MlDsaSignature::from_bytes(sig_bytes)
+        .context("Invalid ML-DSA-65 signature in file")?;
+    
+    // Read and hash the original file
+    let file_data = fs::read(file)
+        .with_context(|| format!("Failed to read file: {}", file.display()))?;
+    
+    let file_hash = Sha256::digest(&file_data);
+    
+    // Check hash matches
+    if file_hash.as_slice() != stored_hash {
+        println!("\x1b[1;31m✗ VERIFICATION FAILED — file has been modified\x1b[0m");
+        println!();
+        println!("  Expected SHA-256: {}", hex::encode(stored_hash));
+        println!("  Actual SHA-256:   {}", hex::encode(&file_hash));
+        println!();
+        println!("  The file content does not match the signed hash.");
+        println!("  This file may have been tampered with.");
+        std::process::exit(1);
+    }
+    
+    // Verify ML-DSA-65 signature
+    let sign_message = &sig_data[0..49]; // magic + hash + timestamp
+    
+    let valid = backend.mldsa_verify(&pk, sign_message, &signature)
+        .context("ML-DSA-65 verification error")?;
+    
+    if valid {
+        println!("\x1b[1;32m✓ Signature verified — file is authentic\x1b[0m");
+        println!();
+        println!("  File:       {}", file.display());
+        println!("  Size:       {} bytes", file_data.len());
+        println!("  SHA-256:    {}", hex::encode(&file_hash));
+        println!("  Algorithm:  ML-DSA-65 (FIPS 204, NIST Security Level 3)");
+        println!("  Signed at:  {}", chrono::DateTime::from_timestamp(timestamp as i64, 0)
+            .map(|dt| dt.to_rfc3339()).unwrap_or_else(|| timestamp.to_string()));
+        println!("  Signer key: {}", key_path.display());
+        
+        // Show public key fingerprint
+        let fingerprint = Sha256::digest(&pk_bytes);
+        let fp_hex = hex::encode(&fingerprint);
+        println!("  Key SHA-256: {}:{}", &fp_hex[..32], &fp_hex[32..]);
+        println!();
+        println!("  This file was signed with a valid ML-DSA-65 post-quantum");
+        println!("  digital signature and has not been modified since signing.");
+    } else {
+        println!("\x1b[1;31m✗ VERIFICATION FAILED — invalid signature\x1b[0m");
+        println!();
+        println!("  The SHA-256 hash matches, but the ML-DSA-65 signature is invalid.");
+        println!("  This could mean:");
+        println!("    - The file was signed with a different key");
+        println!("    - The signature file is corrupted");
+        println!("    - The public key does not match the signer");
+        std::process::exit(1);
+    }
     
     Ok(())
 }

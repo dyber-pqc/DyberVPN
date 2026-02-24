@@ -755,7 +755,7 @@ checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
 
 [[package]]
 name = "dybervpn-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -764,10 +764,12 @@ dependencies = [
  "ctrlc",
  "dybervpn-protocol",
  "dybervpn-tunnel",
+ "hex",
  "libc",
  "nix 0.29.0",
  "serde",
  "serde_json",
+ "sha2",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -776,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "dybervpn-metrics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "chrono",
@@ -791,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "dybervpn-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "blake2",
@@ -814,7 +816,7 @@ dependencies = [
 
 [[package]]
 name = "dybervpn-tunnel"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "boringtun",

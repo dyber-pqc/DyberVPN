@@ -5,6 +5,25 @@ All notable changes to DyberVPN will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-02-24
+
+### Added
+
+- **ML-DSA-65 Artifact Signing**: Post-quantum code signing for release binaries
+  - `dybervpn sign-keygen`: Generate ML-DSA-65 signing keypairs (FIPS 204)
+  - `dybervpn sign`: Sign any file with ML-DSA-65 detached signatures
+  - `dybervpn verify`: Verify ML-DSA-65 signatures on files
+  - Custom binary signature format (`.sig.mldsa`, 3,358 bytes)
+  - SHA-256 file hash + Unix timestamp + ML-DSA-65 signature
+  - Tamper detection with clear error messages
+- **Release signing public key** (`release-signing.mldsa.pub`) included in repo
+- **CI/CD PQ signing**: Release workflow automatically signs all artifacts with ML-DSA-65
+
+### Changed
+
+- Release workflow now includes post-quantum signature verification instructions
+- Updated `.gitignore` to protect signing keys while allowing public key distribution
+
 ## [0.1.0] - 2026-02-24
 
 ### Added

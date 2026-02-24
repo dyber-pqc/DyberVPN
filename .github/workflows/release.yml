@@ -46,6 +46,19 @@ jobs:
             - **Authentication**: ML-DSA-65 (FIPS 204) / Ed25519
             - **Encryption**: ChaCha20-Poly1305
             
+            ### Verify Release (ML-DSA-65 Post-Quantum Signature)
+            
+            All release artifacts are signed with ML-DSA-65 (FIPS 204).
+            
+            ```bash
+            # Download the public key (or use the one in the repo root)
+            curl -sLO https://raw.githubusercontent.com/dyber-pqc/DyberVPN/main/release-signing.mldsa.pub
+            
+            # Verify any artifact
+            dybervpn verify dybervpn-${{ steps.get_version.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz \
+              --key release-signing.mldsa.pub
+            ```
+            
             ### Installation
             
             ```bash
@@ -177,26 +190,87 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Update release notes with checksums
-  checksums:
-    name: Checksums
+  # PQ-sign release artifacts with ML-DSA-65 + generate checksums
+  sign-and-checksums:
+    name: PQ Sign & Checksums
     needs: [create-release, build-binaries]
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build dybervpn CLI
+        run: cargo build --release --bin dybervpn
+
+      - name: Download all release artifacts
         uses: actions/download-artifact@v4
-        
-      - name: Generate checksums
+        with:
+          path: artifacts/
+
+      - name: Collect tarballs
         run: |
+          mkdir -p signing/
+          find artifacts/ -name '*.tar.gz' -exec cp {} signing/ \;
+          ls -la signing/
+
+      - name: PQ-sign artifacts with ML-DSA-65
+        env:
+          MLDSA_SIGNING_KEY_B64: ${{ secrets.MLDSA_SIGNING_KEY }}
+        run: |
+          # Decode private key from GitHub secret
+          echo "$MLDSA_SIGNING_KEY_B64" | base64 -d > signing.mldsa.key
+          
+          # Verify key size (ML-DSA-65 = 4032 bytes)
+          KEY_SIZE=$(wc -c < signing.mldsa.key)
+          if [ "$KEY_SIZE" -ne 4032 ]; then
+            echo "ERROR: Invalid signing key size: $KEY_SIZE (expected 4032)"
+            exit 1
+          fi
+          
+          # Sign each artifact
+          for f in signing/*.tar.gz; do
+            echo "Signing: $f"
+            ./target/release/dybervpn sign "$f" --key signing.mldsa.key
+          done
+          
+          # Sign the dybervpn binary itself
+          cp target/release/dybervpn signing/dybervpn-linux-x86_64
+          ./target/release/dybervpn sign signing/dybervpn-linux-x86_64 --key signing.mldsa.key
+          
+          # Securely delete private key
+          shred -u signing.mldsa.key 2>/dev/null || rm -f signing.mldsa.key
+          
+          echo "Signed artifacts:"
+          ls -la signing/*.sig.mldsa
+
+      - name: Generate SHA-256 checksums
+        run: |
+          cd signing
           sha256sum *.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
-          
+
       - name: Upload checksums
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: SHA256SUMS.txt
+          asset_path: signing/SHA256SUMS.txt
           asset_name: SHA256SUMS.txt
           asset_content_type: text/plain
+
+      - name: Upload PQ signatures
+        run: |
+          for sig in signing/*.sig.mldsa; do
+            name=$(basename "$sig")
+            echo "Uploading: $name"
+            curl -sSL \
+              -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$sig" \
+              "${{ needs.create-release.outputs.upload_url }}=$name"
+          done

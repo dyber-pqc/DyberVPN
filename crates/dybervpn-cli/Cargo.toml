@@ -26,6 +26,8 @@ serde.workspace = true
 serde_json.workspace = true
 chrono = "0.4"
 ctrlc = "3.4"
+sha2.workspace = true
+hex.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
