@@ -1,26 +1,27 @@
 [Unit]
-Description=DyberVPN Post-Quantum VPN Tunnel
+Description=DyberVPN Post-Quantum VPN Daemon
 Documentation=https://github.com/dyberinc/dybervpn
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/dybervpn up /etc/dybervpn/config.toml --foreground
+ExecStart=/usr/local/bin/dybervpn up -c /etc/dybervpn/config.toml -f
 ExecStop=/usr/local/bin/dybervpn down dvpn0
 Restart=on-failure
 RestartSec=5
 
 # Security hardening
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 NoNewPrivileges=yes
-PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/run/dybervpn
-
-# Network capabilities
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/run
 
 # Logging
 StandardOutput=journal

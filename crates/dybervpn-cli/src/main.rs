@@ -179,6 +179,19 @@ fn cmd_genkey(mode: &str, format: &str) -> Result<()> {
         println!("# pq_public_key = \"{}\"", base64::encode(mlkem_pub.as_bytes()));
     }
 
+    // Generate ML-DSA keys if in pq-only mode (for authentication)
+    if mode.uses_pq_auth() && format == "toml" {
+        println!();
+        println!("# Post-Quantum Signing Keys (ML-DSA-65)");
+
+        let (mldsa_pub, mldsa_priv) = backend
+            .mldsa_keygen()
+            .context("Failed to generate ML-DSA key")?;
+
+        println!("mldsa_private_key = \"{}\"", base64::encode(mldsa_priv.as_bytes()));
+        println!("# mldsa_public_key = \"{}\"", base64::encode(mldsa_pub.as_bytes()));
+    }
+
     eprintln!();
     eprintln!("Keys generated successfully.");
     eprintln!("Save the private keys securely and share only the public keys.");
@@ -639,7 +652,41 @@ fn cmd_benchmark(iterations: usize) -> Result<()> {
         elapsed.as_micros() as f64 / iterations as f64);
     
     println!();
+    println!("Post-Quantum Signatures (ML-DSA-65):");
+    
+    // ML-DSA keygen
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _ = backend.mldsa_keygen().unwrap();
+    }
+    let elapsed = start.elapsed();
+    println!("ML-DSA-65 keygen:   {:>8.2} µs/op",
+        elapsed.as_micros() as f64 / iterations as f64);
+    
+    // ML-DSA sign
+    let (_, mldsa_sk) = backend.mldsa_keygen().unwrap();
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _ = backend.mldsa_sign(&mldsa_sk, msg).unwrap();
+    }
+    let elapsed = start.elapsed();
+    println!("ML-DSA-65 sign:     {:>8.2} µs/op",
+        elapsed.as_micros() as f64 / iterations as f64);
+    
+    // ML-DSA verify
+    let (mldsa_pk, mldsa_sk) = backend.mldsa_keygen().unwrap();
+    let mldsa_sig = backend.mldsa_sign(&mldsa_sk, msg).unwrap();
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _ = backend.mldsa_verify(&mldsa_pk, msg, &mldsa_sig).unwrap();
+    }
+    let elapsed = start.elapsed();
+    println!("ML-DSA-65 verify:   {:>8.2} µs/op",
+        elapsed.as_micros() as f64 / iterations as f64);
+    
+    println!();
     println!("Full hybrid handshake estimate: ~250-300 µs");
+    println!("Full PQ-only handshake estimate: ~2-3 ms (includes ML-DSA)");
     
     Ok(())
 }

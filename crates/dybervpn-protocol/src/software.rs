@@ -1,10 +1,14 @@
 //! Software cryptographic backend using ml-kem and dalek
 
 use crate::crypto::{CryptoBackend, CryptoError, CryptoResult};
-use crate::types::{mlkem768, MlKemCiphertext, MlKemPublicKey, MlKemSecretKey, SharedSecret};
+use crate::types::{
+    mldsa65, mlkem768, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlKemCiphertext,
+    MlKemPublicKey, MlKemSecretKey, SharedSecret,
+};
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
+use ml_dsa::MlDsa65;
 use ml_kem::kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey};
 use ml_kem::{EncodedSizeUser, KemCore, MlKem768, MlKem768Params};
 use rand_core::OsRng;
@@ -195,6 +199,111 @@ impl CryptoBackend for SoftwareBackend {
     }
 
     // ========================================================================
+    // ML-DSA-65 (Post-Quantum Signatures)
+    // ========================================================================
+
+    fn mldsa_keygen(&self) -> CryptoResult<(MlDsaPublicKey, MlDsaSecretKey)> {
+        // Generate a 32-byte seed for key generation
+        let mut seed = [0u8; 32];
+        self.random_bytes(&mut seed)?;
+        
+        // Create signing key from seed
+        let signing_key = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed.into());
+        let verifying_key = signing_key.verifying_key();
+        
+        // Get expanded signing key bytes (this is what we store)
+        let sk_expanded = signing_key.to_expanded();
+        let sk_bytes: &[u8] = sk_expanded.as_ref();
+        
+        // Get verifying key bytes
+        let pk_encoded = verifying_key.encode();
+        let pk_bytes: &[u8] = pk_encoded.as_ref();
+
+        if pk_bytes.len() != mldsa65::PUBLIC_KEY_SIZE {
+            return Err(CryptoError::KeyGeneration(format!(
+                "Unexpected ML-DSA public key size: {} (expected {})",
+                pk_bytes.len(),
+                mldsa65::PUBLIC_KEY_SIZE
+            )));
+        }
+
+        if sk_bytes.len() != mldsa65::SECRET_KEY_SIZE {
+            return Err(CryptoError::KeyGeneration(format!(
+                "Unexpected ML-DSA secret key size: {} (expected {})",
+                sk_bytes.len(),
+                mldsa65::SECRET_KEY_SIZE
+            )));
+        }
+
+        Ok((
+            MlDsaPublicKey(pk_bytes.to_vec()),
+            MlDsaSecretKey(sk_bytes.to_vec()),
+        ))
+    }
+
+    fn mldsa_sign(&self, secret_key: &MlDsaSecretKey, msg: &[u8]) -> CryptoResult<MlDsaSignature> {
+        use ml_dsa::signature::Signer;
+
+        let sk_bytes = secret_key.as_bytes();
+        if sk_bytes.len() != mldsa65::SECRET_KEY_SIZE {
+            return Err(CryptoError::Signing("Invalid secret key size".into()));
+        }
+
+        // Convert bytes to ExpandedSigningKey and create SigningKey
+        let sk_array: ml_dsa::ExpandedSigningKey<MlDsa65> = sk_bytes
+            .try_into()
+            .map_err(|_| CryptoError::Signing("Failed to convert secret key".into()))?;
+
+        // Note: from_expanded is deprecated, but we need it to reconstruct from stored bytes
+        #[allow(deprecated)]
+        let signing_key = ml_dsa::SigningKey::<MlDsa65>::from_expanded(&sk_array);
+        let signature = signing_key.sign(msg);
+        let sig_encoded = signature.encode();
+        let sig_bytes: &[u8] = sig_encoded.as_ref();
+
+        Ok(MlDsaSignature(sig_bytes.to_vec()))
+    }
+
+    fn mldsa_verify(
+        &self,
+        public_key: &MlDsaPublicKey,
+        msg: &[u8],
+        signature: &MlDsaSignature,
+    ) -> CryptoResult<bool> {
+        use ml_dsa::signature::Verifier;
+
+        let pk_bytes = public_key.as_bytes();
+        if pk_bytes.len() != mldsa65::PUBLIC_KEY_SIZE {
+            return Err(CryptoError::Verification("Invalid public key size".into()));
+        }
+
+        let sig_bytes = signature.as_bytes();
+        if sig_bytes.len() != mldsa65::SIGNATURE_SIZE {
+            return Err(CryptoError::Verification("Invalid signature size".into()));
+        }
+
+        // Convert bytes to EncodedVerifyingKey and decode
+        let pk_array: ml_dsa::EncodedVerifyingKey<MlDsa65> = pk_bytes
+            .try_into()
+            .map_err(|_| CryptoError::Verification("Failed to convert public key".into()))?;
+
+        let verifying_key = ml_dsa::VerifyingKey::<MlDsa65>::decode(&pk_array);
+
+        // Convert bytes to EncodedSignature and decode
+        let sig_array: ml_dsa::EncodedSignature<MlDsa65> = sig_bytes
+            .try_into()
+            .map_err(|_| CryptoError::Verification("Failed to convert signature".into()))?;
+
+        let sig = ml_dsa::Signature::<MlDsa65>::decode(&sig_array)
+            .ok_or_else(|| CryptoError::Verification("Invalid signature encoding".into()))?;
+
+        match verifying_key.verify(msg, &sig) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+
+    // ========================================================================
     // Entropy
     // ========================================================================
 
@@ -267,6 +376,23 @@ mod tests {
 
         // Wrong message should fail
         let invalid = b.ed25519_verify(&pk, b"wrong message", &sig).expect("verify failed");
+        assert!(!invalid);
+    }
+
+    #[test]
+    fn test_mldsa_sign_verify() {
+        let b = backend();
+
+        let (pk, sk) = b.mldsa_keygen().expect("keygen failed");
+        let msg = b"test message for ML-DSA signing";
+
+        let sig = b.mldsa_sign(&sk, msg).expect("sign failed");
+        let valid = b.mldsa_verify(&pk, msg, &sig).expect("verify failed");
+
+        assert!(valid);
+
+        // Wrong message should fail
+        let invalid = b.mldsa_verify(&pk, b"wrong message", &sig).expect("verify failed");
         assert!(!invalid);
     }
 

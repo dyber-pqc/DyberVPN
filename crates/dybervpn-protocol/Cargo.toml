@@ -15,6 +15,9 @@ software-backend = []
 # PQC - ML-KEM (pure Rust, NIST FIPS 203)
 ml-kem.workspace = true
 
+# PQC - ML-DSA (pure Rust, NIST FIPS 204)
+ml-dsa.workspace = true
+
 # Classical crypto
 x25519-dalek.workspace = true
 ed25519-dalek.workspace = true

@@ -4,7 +4,10 @@
 //! allowing both software implementations and hardware acceleration (QUAC 100)
 //! to be used interchangeably.
 
-use crate::types::{KeyError, MlKemCiphertext, MlKemPublicKey, MlKemSecretKey, SharedSecret};
+use crate::types::{
+    KeyError, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlKemCiphertext, MlKemPublicKey,
+    MlKemSecretKey, SharedSecret,
+};
 
 /// Result type for crypto operations
 pub type CryptoResult<T> = Result<T, CryptoError>;
@@ -100,6 +103,24 @@ pub trait CryptoBackend: Send + Sync {
         public_key: &[u8; 32],
         msg: &[u8],
         signature: &[u8; 64],
+    ) -> CryptoResult<bool>;
+
+    // ========================================================================
+    // ML-DSA-65 (Post-Quantum Signatures)
+    // ========================================================================
+
+    /// Generate an ML-DSA-65 key pair
+    fn mldsa_keygen(&self) -> CryptoResult<(MlDsaPublicKey, MlDsaSecretKey)>;
+
+    /// Sign a message using ML-DSA-65
+    fn mldsa_sign(&self, secret_key: &MlDsaSecretKey, msg: &[u8]) -> CryptoResult<MlDsaSignature>;
+
+    /// Verify an ML-DSA-65 signature
+    fn mldsa_verify(
+        &self,
+        public_key: &MlDsaPublicKey,
+        msg: &[u8],
+        signature: &MlDsaSignature,
     ) -> CryptoResult<bool>;
 
     // ========================================================================

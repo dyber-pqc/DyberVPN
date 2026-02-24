@@ -76,6 +76,9 @@ zeroize = { version = "1.7", features = ["derive"] }
 # PQC - ML-KEM (Kyber) implementation
 ml-kem = "0.2"
 
+# PQC - ML-DSA (Dilithium) implementation
+ml-dsa = "0.1.0-rc.7"
+
 [profile.release]
 lto = true
 codegen-units = 1
