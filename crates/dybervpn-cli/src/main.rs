@@ -386,40 +386,265 @@ fn parse_cidr(s: &str) -> Result<(IpAddr, u8)> {
 
 /// Stop the VPN tunnel
 fn cmd_down(interface: &str) -> Result<()> {
-    tracing::info!("Stopping tunnel: {}", interface);
+    use std::process::Command;
     
-    // TODO: Find and stop the tunnel via PID file or other mechanism
-    eprintln!("Note: Remote shutdown not yet implemented.");
-    eprintln!("Use Ctrl+C to stop the running tunnel.");
+    let pid_file = format!("/var/run/dybervpn/{}.pid", interface);
+    
+    // Check if PID file exists
+    if !std::path::Path::new(&pid_file).exists() {
+        // Try alternative location
+        let alt_pid_file = format!("/tmp/dybervpn-{}.pid", interface);
+        if !std::path::Path::new(&alt_pid_file).exists() {
+            eprintln!("No PID file found for interface '{}'", interface);
+            eprintln!("The tunnel may not be running, or was started in foreground mode.");
+            eprintln!();
+            eprintln!("To stop a foreground tunnel, use Ctrl+C in the terminal where it's running.");
+            
+            // Try to check if interface exists
+            #[cfg(target_os = "linux")]
+            {
+                let output = Command::new("ip")
+                    .args(["link", "show", interface])
+                    .output();
+                
+                if let Ok(output) = output {
+                    if output.status.success() {
+                        eprintln!();
+                        eprintln!("Note: Interface '{}' exists. You may need to remove it manually:", interface);
+                        eprintln!("  sudo ip link delete {}", interface);
+                    }
+                }
+            }
+            
+            return Ok(());
+        }
+        return stop_tunnel_from_pid(&alt_pid_file, interface);
+    }
+    
+    stop_tunnel_from_pid(&pid_file, interface)
+}
+
+fn stop_tunnel_from_pid(pid_file: &str, interface: &str) -> Result<()> {
+    use std::fs;
+    
+    let pid_str = fs::read_to_string(pid_file)
+        .context("Failed to read PID file")?;
+    let pid: i32 = pid_str.trim().parse()
+        .context("Invalid PID in file")?;
+    
+    println!("Stopping DyberVPN tunnel '{}' (PID: {})", interface, pid);
+    
+    // Send SIGTERM to the process
+    #[cfg(unix)]
+    {
+        // Check if process exists
+        let exists = unsafe { libc::kill(pid, 0) } == 0;
+        if !exists {
+            eprintln!("Process {} is not running. Cleaning up PID file.", pid);
+            let _ = fs::remove_file(pid_file);
+            return Ok(());
+        }
+        
+        // Send SIGTERM
+        let result = unsafe { libc::kill(pid, libc::SIGTERM) };
+        if result != 0 {
+            anyhow::bail!("Failed to send SIGTERM to process {}", pid);
+        }
+        
+        println!("Sent SIGTERM to process {}", pid);
+        
+        // Wait for process to exit (up to 5 seconds)
+        for i in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let exists = unsafe { libc::kill(pid, 0) } == 0;
+            if !exists {
+                println!("Tunnel '{}' stopped successfully", interface);
+                let _ = fs::remove_file(pid_file);
+                return Ok(());
+            }
+            if i == 20 {
+                println!("Waiting for tunnel to stop...");
+            }
+        }
+        
+        // Process didn't exit, try SIGKILL
+        eprintln!("Process didn't exit gracefully, sending SIGKILL");
+        let result = unsafe { libc::kill(pid, libc::SIGKILL) };
+        if result != 0 {
+            anyhow::bail!("Failed to send SIGKILL to process {}", pid);
+        }
+        
+        let _ = fs::remove_file(pid_file);
+        println!("Tunnel '{}' killed", interface);
+    }
+    
+    #[cfg(not(unix))]
+    {
+        eprintln!("Process management not supported on this platform");
+    }
     
     Ok(())
 }
 
 /// Show tunnel status
 fn cmd_status(interface: Option<&str>, json: bool) -> Result<()> {
+    use std::fs;
+    
+    #[cfg(target_os = "linux")]
+    use std::process::Command;
+    
+    // If no interface specified, look for all running tunnels
+    if interface.is_none() {
+        println!("DyberVPN Status");
+        println!("===============");
+        println!();
+        
+        // Check for running tunnels
+        let mut found_any = false;
+        
+        // Check /var/run/dybervpn/ for PID files
+        if let Ok(entries) = fs::read_dir("/var/run/dybervpn") {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if name.ends_with(".pid") {
+                        let iface = name.trim_end_matches(".pid");
+                        show_interface_status(iface, json)?;
+                        found_any = true;
+                    }
+                }
+            }
+        }
+        
+        // Check /tmp for PID files
+        if let Ok(entries) = fs::read_dir("/tmp") {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if name.starts_with("dybervpn-") && name.ends_with(".pid") {
+                        let iface = name.trim_start_matches("dybervpn-").trim_end_matches(".pid");
+                        show_interface_status(iface, json)?;
+                        found_any = true;
+                    }
+                }
+            }
+        }
+        
+        // Check for interfaces without PID files (foreground mode)
+        #[cfg(target_os = "linux")]
+        {
+            let output = Command::new("ip")
+                .args(["link", "show", "type", "tun"])
+                .output();
+            
+            if let Ok(output) = output {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    if line.contains("dvpn") {
+                        // Extract interface name
+                        if let Some(name) = line.split(':').nth(1) {
+                            let name = name.trim().split('@').next().unwrap_or("").trim();
+                            if !name.is_empty() {
+                                show_interface_status(name, json)?;
+                                found_any = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if !found_any {
+            println!("No DyberVPN tunnels found.");
+            println!();
+            println!("To start a tunnel:");
+            println!("  dybervpn up -c /path/to/config.toml");
+        }
+        
+        return Ok(());
+    }
+    
+    let iface = interface.unwrap();
+    show_interface_status(iface, json)
+}
+
+fn show_interface_status(interface: &str, json: bool) -> Result<()> {
+    use std::fs;
+    use std::process::Command;
+    
     #[derive(serde::Serialize)]
     struct StatusOutput {
         interface: String,
         state: String,
         mode: String,
-        peers: Vec<PeerStatus>,
+        address: Option<String>,
+        pid: Option<i32>,
     }
     
-    #[derive(serde::Serialize)]
-    struct PeerStatus {
-        public_key: String,
-        endpoint: Option<String>,
-        last_handshake: Option<String>,
-        tx_bytes: u64,
-        rx_bytes: u64,
+    let mut state = "unknown";
+    let mut pid: Option<i32> = None;
+    let mut address: Option<String> = None;
+    
+    // Check for PID file
+    let pid_file = format!("/var/run/dybervpn/{}.pid", interface);
+    let alt_pid_file = format!("/tmp/dybervpn-{}.pid", interface);
+    
+    for pf in [&pid_file, &alt_pid_file] {
+        if let Ok(pid_str) = fs::read_to_string(pf) {
+            if let Ok(p) = pid_str.trim().parse::<i32>() {
+                // Check if process is actually running
+                #[cfg(unix)]
+                {
+                    let exists = unsafe { libc::kill(p, 0) } == 0;
+                    if exists {
+                        pid = Some(p);
+                        state = "running";
+                    } else {
+                        state = "stale (process not found)";
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    pid = Some(p);
+                    state = "running (unverified)";
+                }
+            }
+            break;
+        }
     }
     
-    // TODO: Get actual status from running daemon
+    // Check if interface exists and get address
+    #[cfg(target_os = "linux")]
+    {
+        let output = Command::new("ip")
+            .args(["-4", "addr", "show", interface])
+            .output();
+        
+        if let Ok(output) = output {
+            if output.status.success() {
+                if state == "unknown" {
+                    state = "running (foreground)";
+                }
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // Parse inet line
+                for line in stdout.lines() {
+                    let line = line.trim();
+                    if line.starts_with("inet ") {
+                        if let Some(addr) = line.split_whitespace().nth(1) {
+                            address = Some(addr.to_string());
+                        }
+                    }
+                }
+            } else if state == "unknown" {
+                state = "not running";
+            }
+        }
+    }
+    
     let status = StatusOutput {
-        interface: interface.unwrap_or("dvpn0").to_string(),
-        state: "not running".to_string(),
-        mode: "hybrid".to_string(),
-        peers: vec![],
+        interface: interface.to_string(),
+        state: state.to_string(),
+        mode: "hybrid".to_string(), // TODO: Read from config
+        address,
+        pid,
     };
     
     if json {
@@ -427,8 +652,14 @@ fn cmd_status(interface: Option<&str>, json: bool) -> Result<()> {
     } else {
         println!("interface: {}", status.interface);
         println!("  state: {}", status.state);
+        if let Some(p) = status.pid {
+            println!("  pid: {}", p);
+        }
+        if let Some(addr) = &status.address {
+            println!("  address: {}", addr);
+        }
         println!("  mode: {}", status.mode);
-        println!("  peers: {}", status.peers.len());
+        println!();
     }
     
     Ok(())

@@ -11,8 +11,8 @@
 use std::convert::TryInto;
 
 use dybervpn_protocol::{
-    select_backend, MlKemCiphertext, MlKemPublicKey, MlKemSecretKey,
-    OperatingMode,
+    select_backend, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature,
+    MlKemCiphertext, MlKemPublicKey, MlKemSecretKey, OperatingMode,
 };
 
 /// ML-KEM-768 key sizes (NIST FIPS 203)
@@ -20,6 +20,11 @@ pub const MLKEM_PUBLIC_KEY_SIZE: usize = 1184;
 pub const MLKEM_SECRET_KEY_SIZE: usize = 2400;
 pub const MLKEM_CIPHERTEXT_SIZE: usize = 1088;
 pub const MLKEM_SHARED_SECRET_SIZE: usize = 32;
+
+/// ML-DSA-65 key/signature sizes (NIST FIPS 204)
+pub const MLDSA_PUBLIC_KEY_SIZE: usize = 1952;
+pub const MLDSA_SECRET_KEY_SIZE: usize = 4032;
+pub const MLDSA_SIGNATURE_SIZE: usize = 3309;
 
 /// Extended handshake message types for DyberVPN
 /// These use message type 5+ to avoid conflicts with standard WireGuard (1-4)
@@ -75,6 +80,75 @@ impl std::fmt::Debug for PqKeyPair {
     }
 }
 
+/// ML-DSA-65 signing key pair for post-quantum authentication
+#[derive(Clone)]
+pub struct MlDsaKeyPair {
+    /// ML-DSA public key (verification key)
+    pub public_key: MlDsaPublicKey,
+    /// ML-DSA secret key (signing key)
+    pub secret_key: MlDsaSecretKey,
+}
+
+impl MlDsaKeyPair {
+    /// Generate a new ML-DSA-65 key pair
+    pub fn generate() -> Result<Self, String> {
+        let backend = select_backend();
+        let (public_key, secret_key) = backend
+            .mldsa_keygen()
+            .map_err(|e| format!("ML-DSA keygen failed: {}", e))?;
+        Ok(Self {
+            public_key,
+            secret_key,
+        })
+    }
+
+    /// Create from raw bytes
+    pub fn from_bytes(public_key: &[u8], secret_key: &[u8]) -> Result<Self, String> {
+        let public_key = MlDsaPublicKey::from_bytes(public_key)
+            .map_err(|e| format!("Invalid ML-DSA public key: {}", e))?;
+        let secret_key = MlDsaSecretKey::from_bytes(secret_key)
+            .map_err(|e| format!("Invalid ML-DSA secret key: {}", e))?;
+        Ok(Self { public_key, secret_key })
+    }
+
+    /// Sign a message
+    pub fn sign(&self, message: &[u8]) -> Result<MlDsaSignature, String> {
+        let backend = select_backend();
+        backend
+            .mldsa_sign(&self.secret_key, message)
+            .map_err(|e| format!("ML-DSA sign failed: {}", e))
+    }
+
+    /// Verify a signature with our public key
+    pub fn verify(&self, message: &[u8], signature: &MlDsaSignature) -> Result<bool, String> {
+        let backend = select_backend();
+        backend
+            .mldsa_verify(&self.public_key, message, signature)
+            .map_err(|e| format!("ML-DSA verify failed: {}", e))
+    }
+}
+
+impl std::fmt::Debug for MlDsaKeyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MlDsaKeyPair")
+            .field("public_key", &"[ML-DSA-65 public key]")
+            .field("secret_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Verify an ML-DSA signature using a public key
+pub fn mldsa_verify(
+    public_key: &MlDsaPublicKey,
+    message: &[u8],
+    signature: &MlDsaSignature,
+) -> Result<bool, String> {
+    let backend = select_backend();
+    backend
+        .mldsa_verify(public_key, message, signature)
+        .map_err(|e| format!("ML-DSA verify failed: {}", e))
+}
+
 /// Hybrid handshake state extension for PQ
 #[derive(Debug)]
 pub struct HybridHandshakeState {
@@ -90,6 +164,14 @@ pub struct HybridHandshakeState {
     pub pq_ciphertext: Option<MlKemCiphertext>,
     /// ML-KEM shared secret (derived during handshake)
     pub pq_shared_secret: Option<[u8; 32]>,
+    
+    // ML-DSA-65 authentication (for pq-only mode)
+    /// Our ML-DSA signing key pair
+    pub mldsa_keypair: Option<MlDsaKeyPair>,
+    /// Peer's ML-DSA public key
+    pub peer_mldsa_public_key: Option<MlDsaPublicKey>,
+    /// Handshake transcript for signing (accumulates handshake messages)
+    pub handshake_transcript: Vec<u8>,
 }
 
 impl HybridHandshakeState {
@@ -102,6 +184,9 @@ impl HybridHandshakeState {
             ephemeral_pq_keypair: None,
             pq_ciphertext: None,
             pq_shared_secret: None,
+            mldsa_keypair: None,
+            peer_mldsa_public_key: None,
+            handshake_transcript: Vec::new(),
         }
     }
 
@@ -118,6 +203,9 @@ impl HybridHandshakeState {
             ephemeral_pq_keypair: None,
             pq_ciphertext: None,
             pq_shared_secret: None,
+            mldsa_keypair: None,
+            peer_mldsa_public_key: None,
+            handshake_transcript: Vec::new(),
         }
     }
 
@@ -130,10 +218,54 @@ impl HybridHandshakeState {
     pub fn set_peer_public_key(&mut self, public_key: MlKemPublicKey) {
         self.peer_pq_public_key = Some(public_key);
     }
+    
+    /// Set our ML-DSA signing key pair (for pq-only mode)
+    pub fn set_mldsa_keypair(&mut self, keypair: MlDsaKeyPair) {
+        self.mldsa_keypair = Some(keypair);
+    }
+    
+    /// Set peer's ML-DSA public key (for pq-only mode)
+    pub fn set_peer_mldsa_public_key(&mut self, public_key: MlDsaPublicKey) {
+        self.peer_mldsa_public_key = Some(public_key);
+    }
 
     /// Check if PQ is enabled for this handshake
     pub fn is_pq_enabled(&self) -> bool {
         self.mode.uses_pq_kex()
+    }
+    
+    /// Check if PQ authentication (ML-DSA) is enabled
+    pub fn is_pq_auth_enabled(&self) -> bool {
+        self.mode.uses_pq_auth()
+    }
+    
+    /// Add data to the handshake transcript (for signing)
+    pub fn extend_transcript(&mut self, data: &[u8]) {
+        self.handshake_transcript.extend_from_slice(data);
+    }
+    
+    /// Sign the handshake transcript with our ML-DSA key
+    pub fn sign_transcript(&self) -> Result<MlDsaSignature, String> {
+        if !self.is_pq_auth_enabled() {
+            return Err("PQ auth not enabled".into());
+        }
+        
+        let keypair = self.mldsa_keypair.as_ref()
+            .ok_or("No ML-DSA keypair configured")?;
+        
+        keypair.sign(&self.handshake_transcript)
+    }
+    
+    /// Verify peer's signature over the transcript
+    pub fn verify_peer_signature(&self, signature: &MlDsaSignature) -> Result<bool, String> {
+        if !self.is_pq_auth_enabled() {
+            return Err("PQ auth not enabled".into());
+        }
+        
+        let peer_pk = self.peer_mldsa_public_key.as_ref()
+            .ok_or("No peer ML-DSA public key configured")?;
+        
+        mldsa_verify(peer_pk, &self.handshake_transcript, signature)
     }
 
     /// Generate ephemeral PQ keypair for initiator
@@ -234,6 +366,7 @@ impl HybridHandshakeState {
     pub fn clear_ephemeral(&mut self) {
         self.ephemeral_pq_keypair = None;
         self.pq_ciphertext = None;
+        self.handshake_transcript.clear();
         // Note: pq_shared_secret is intentionally kept for session key derivation
     }
 }
@@ -470,6 +603,54 @@ mod tests {
         
         // Check ciphertext was appended
         assert_eq!(&dst[92..], &pq_ct[..]);
+    }
+
+    #[test]
+    fn test_mldsa_keypair_generation() {
+        let keypair = MlDsaKeyPair::generate().unwrap();
+        assert_eq!(keypair.public_key.as_bytes().len(), MLDSA_PUBLIC_KEY_SIZE);
+        assert_eq!(keypair.secret_key.as_bytes().len(), MLDSA_SECRET_KEY_SIZE);
+    }
+
+    #[test]
+    fn test_mldsa_sign_verify() {
+        let keypair = MlDsaKeyPair::generate().unwrap();
+        let message = b"test handshake transcript";
+        
+        let signature = keypair.sign(message).unwrap();
+        assert_eq!(signature.as_bytes().len(), MLDSA_SIGNATURE_SIZE);
+        
+        let valid = keypair.verify(message, &signature).unwrap();
+        assert!(valid);
+    }
+
+    #[test]
+    fn test_pq_only_mode_auth() {
+        let mut state = HybridHandshakeState::new(OperatingMode::PqOnly);
+        assert!(state.is_pq_enabled());
+        assert!(state.is_pq_auth_enabled());
+        
+        // Set up ML-DSA keys
+        let keypair = MlDsaKeyPair::generate().unwrap();
+        state.set_mldsa_keypair(keypair);
+        
+        // Simulate handshake transcript
+        state.extend_transcript(b"init message");
+        state.extend_transcript(b"response message");
+        
+        // Sign transcript
+        let signature = state.sign_transcript().unwrap();
+        
+        // Create peer state to verify
+        let mut peer_state = HybridHandshakeState::new(OperatingMode::PqOnly);
+        peer_state.set_peer_mldsa_public_key(
+            state.mldsa_keypair.as_ref().unwrap().public_key.clone()
+        );
+        peer_state.extend_transcript(b"init message");
+        peer_state.extend_transcript(b"response message");
+        
+        let valid = peer_state.verify_peer_signature(&signature).unwrap();
+        assert!(valid);
     }
 
     #[test]

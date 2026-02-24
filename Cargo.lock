@@ -764,6 +764,7 @@ dependencies = [
  "ctrlc",
  "dybervpn-protocol",
  "dybervpn-tunnel",
+ "libc",
  "serde",
  "serde_json",
  "toml",
