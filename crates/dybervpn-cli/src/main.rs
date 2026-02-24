@@ -6,8 +6,10 @@ use dybervpn_protocol::{select_backend, Config, OperatingMode};
 use dybervpn_tunnel::{Daemon, TunnelConfig, PeerConfig};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::fs;
+use std::io::Write;
 
 /// DyberVPN — Post-Quantum VPN for Infrastructure You Control
 #[derive(Parser)]
@@ -226,6 +228,185 @@ fn cmd_pubkey() -> Result<()> {
     Ok(())
 }
 
+/// PID file locations (in order of preference)
+const PID_DIR_PRIMARY: &str = "/var/run/dybervpn";
+const PID_DIR_FALLBACK: &str = "/tmp";
+
+/// Get the PID file path for an interface
+fn get_pid_path(interface: &str) -> PathBuf {
+    // Try primary location first
+    let primary_dir = Path::new(PID_DIR_PRIMARY);
+    if primary_dir.exists() || fs::create_dir_all(primary_dir).is_ok() {
+        return primary_dir.join(format!("{}.pid", interface));
+    }
+    // Fall back to /tmp
+    PathBuf::from(format!("{}/dybervpn-{}.pid", PID_DIR_FALLBACK, interface))
+}
+
+/// Write PID file
+fn write_pid_file(path: &Path, pid: u32) -> Result<()> {
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok(); // Best effort
+    }
+    
+    let mut file = fs::File::create(path)
+        .with_context(|| format!("Failed to create PID file: {}", path.display()))?;
+    
+    writeln!(file, "{}", pid)
+        .with_context(|| format!("Failed to write PID file: {}", path.display()))?;
+    
+    // Set restrictive permissions on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o644);
+        fs::set_permissions(path, perms).ok();
+    }
+    
+    Ok(())
+}
+
+/// Remove PID file
+fn remove_pid_file(path: &Path) {
+    if let Err(e) = fs::remove_file(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("Failed to remove PID file {}: {}", path.display(), e);
+        }
+    }
+}
+
+/// Check if a process is running
+/// Uses multiple methods to check, works regardless of permissions
+#[cfg(unix)]
+fn is_process_running(pid: i32) -> bool {
+    // Method 1: Try to read /proc/PID/stat (world-readable)
+    // This is more reliable than exists() which can fail due to permission checks
+    let proc_stat = format!("/proc/{}/stat", pid);
+    if fs::metadata(&proc_stat).is_ok() {
+        return true;
+    }
+    
+    // Method 2: Try to read /proc/PID/cmdline (also world-readable)
+    let proc_cmdline = format!("/proc/{}/cmdline", pid);
+    if fs::read(&proc_cmdline).is_ok() {
+        return true;
+    }
+    
+    // Method 3: Check /proc/PID directory using metadata
+    let proc_dir = format!("/proc/{}", pid);
+    if fs::metadata(&proc_dir).is_ok() {
+        return true;
+    }
+    
+    // Method 4: Fall back to kill(0) - works if we have permission
+    let result = unsafe { libc::kill(pid, 0) };
+    if result == 0 {
+        return true;
+    }
+    
+    // Method 5: Check errno for EPERM (process exists but no permission)
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    errno == libc::EPERM
+}
+
+#[cfg(not(unix))]
+fn is_process_running(_pid: i32) -> bool {
+    true // Assume running on non-Unix
+}
+
+/// Check if tunnel is already running
+fn check_already_running(interface: &str) -> Result<()> {
+    let pid_path = get_pid_path(interface);
+    
+    if pid_path.exists() {
+        if let Ok(pid_str) = fs::read_to_string(&pid_path) {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                if is_process_running(pid) {
+                    anyhow::bail!(
+                        "Tunnel '{}' is already running (PID {}). \
+                         Use 'dybervpn down {}' to stop it first.",
+                        interface, pid, interface
+                    );
+                } else {
+                    // Stale PID file, remove it
+                    tracing::warn!("Removing stale PID file for '{}'", interface);
+                    remove_pid_file(&pid_path);
+                }
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+/// Daemonize the process (Unix only)
+#[cfg(unix)]
+fn daemonize() -> Result<bool> {
+    use nix::unistd::{fork, setsid, ForkResult};
+    use nix::sys::stat::umask;
+    use nix::sys::stat::Mode;
+    
+    // First fork
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { .. }) => {
+            // Parent exits successfully
+            return Ok(false); // Signal parent to exit
+        }
+        Ok(ForkResult::Child) => {
+            // Child continues
+        }
+        Err(e) => {
+            anyhow::bail!("First fork failed: {}", e);
+        }
+    }
+    
+    // Create new session (detach from terminal)
+    setsid().context("Failed to create new session")?;
+    
+    // Set umask
+    umask(Mode::from_bits_truncate(0o022));
+    
+    // Second fork (prevent acquiring a controlling terminal)
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { .. }) => {
+            // Intermediate parent exits
+            std::process::exit(0);
+        }
+        Ok(ForkResult::Child) => {
+            // Grandchild continues as daemon
+        }
+        Err(e) => {
+            anyhow::bail!("Second fork failed: {}", e);
+        }
+    }
+    
+    // Change to root directory to avoid holding directory handles
+    std::env::set_current_dir("/").ok();
+    
+    // Redirect standard file descriptors to /dev/null
+    use std::os::unix::io::AsRawFd;
+    let dev_null = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")
+        .context("Failed to open /dev/null")?;
+    
+    let null_fd = dev_null.as_raw_fd();
+    unsafe {
+        libc::dup2(null_fd, libc::STDIN_FILENO);
+        libc::dup2(null_fd, libc::STDOUT_FILENO);
+        libc::dup2(null_fd, libc::STDERR_FILENO);
+    }
+    
+    Ok(true) // Signal daemon to continue
+}
+
+#[cfg(not(unix))]
+fn daemonize() -> Result<bool> {
+    anyhow::bail!("Daemonization is not supported on this platform. Use -f/--foreground.");
+}
+
 /// Start the VPN tunnel
 fn cmd_up(config_path: &PathBuf, foreground: bool) -> Result<()> {
     let config_str = std::fs::read_to_string(config_path)
@@ -236,15 +417,44 @@ fn cmd_up(config_path: &PathBuf, foreground: bool) -> Result<()> {
     
     config.validate().context("Invalid configuration")?;
     
-    tracing::info!(
-        "Starting DyberVPN tunnel: {}",
-        config.interface.name
-    );
-    tracing::info!("Mode: {:?}", config.interface.mode);
+    let interface_name = config.interface.name.clone();
+    
+    // Check if already running
+    check_already_running(&interface_name)?;
+    
+    // Get PID file path before potential daemonization
+    let pid_path = get_pid_path(&interface_name);
     
     if !foreground {
-        eprintln!("Note: Daemonization not yet implemented. Running in foreground.");
+        // Daemonize before initializing the tunnel
+        println!("Starting DyberVPN tunnel '{}' in background...", interface_name);
+        println!("PID file: {}", pid_path.display());
+        println!("Use 'dybervpn status' to check tunnel status");
+        println!("Use 'dybervpn down {}' to stop the tunnel", interface_name);
+        
+        if !daemonize()? {
+            // Parent process - exit successfully
+            // The child will continue and write the PID file
+            std::process::exit(0);
+        }
+        
+        // We're now the daemon process
+        // Re-initialize logging for daemon mode (log to syslog or file)
+        // For now, we'll just continue with the existing setup
+        // In production, you'd configure file-based logging here
+    } else {
+        tracing::info!("Starting DyberVPN tunnel '{}' in foreground", interface_name);
     }
+    
+    tracing::info!("Mode: {:?}", config.interface.mode);
+    
+    // Write PID file
+    let current_pid = std::process::id();
+    write_pid_file(&pid_path, current_pid)?;
+    tracing::info!("PID {} written to {}", current_pid, pid_path.display());
+    
+    // Set up cleanup on exit
+    let pid_path_clone = pid_path.clone();
     
     // Convert config to TunnelConfig
     let tunnel_config = convert_config(&config)?;
@@ -256,20 +466,31 @@ fn cmd_up(config_path: &PathBuf, foreground: bool) -> Result<()> {
     // Get shutdown flag for signal handling
     let shutdown_flag = daemon.shutdown_flag();
     
-    // Set up Ctrl+C handler
+    // Set up Ctrl+C handler (and SIGTERM in daemon mode)
     let shutdown_flag_clone = shutdown_flag.clone();
     ctrlc::set_handler(move || {
         tracing::info!("Received shutdown signal");
         shutdown_flag_clone.store(true, Ordering::Relaxed);
-    }).context("Failed to set Ctrl+C handler")?;
+    }).context("Failed to set signal handler")?;
     
     // Initialize the daemon
-    daemon.init().context("Failed to initialize daemon")?;
+    match daemon.init() {
+        Ok(_) => {}
+        Err(e) => {
+            remove_pid_file(&pid_path_clone);
+            return Err(e).context("Failed to initialize daemon");
+        }
+    }
     
     // Run the event loop
-    daemon.run().context("Daemon error")?;
+    let result = daemon.run();
     
-    tracing::info!("Tunnel stopped");
+    // Clean up PID file
+    remove_pid_file(&pid_path);
+    tracing::info!("PID file removed");
+    
+    result.context("Daemon error")?;
+    tracing::info!("Tunnel '{}' stopped", interface_name);
     
     Ok(())
 }
@@ -386,15 +607,21 @@ fn parse_cidr(s: &str) -> Result<(IpAddr, u8)> {
 
 /// Stop the VPN tunnel
 fn cmd_down(interface: &str) -> Result<()> {
-    use std::process::Command;
+    let pid_path = get_pid_path(interface);
     
-    let pid_file = format!("/var/run/dybervpn/{}.pid", interface);
-    
-    // Check if PID file exists
-    if !std::path::Path::new(&pid_file).exists() {
-        // Try alternative location
-        let alt_pid_file = format!("/tmp/dybervpn-{}.pid", interface);
-        if !std::path::Path::new(&alt_pid_file).exists() {
+    // Also check alternate location if primary doesn't exist
+    let pid_file_to_use = if pid_path.exists() {
+        pid_path
+    } else {
+        // Try both locations
+        let primary = PathBuf::from(format!("{}/{}.pid", PID_DIR_PRIMARY, interface));
+        let fallback = PathBuf::from(format!("{}/dybervpn-{}.pid", PID_DIR_FALLBACK, interface));
+        
+        if primary.exists() {
+            primary
+        } else if fallback.exists() {
+            fallback
+        } else {
             eprintln!("No PID file found for interface '{}'", interface);
             eprintln!("The tunnel may not be running, or was started in foreground mode.");
             eprintln!();
@@ -403,6 +630,7 @@ fn cmd_down(interface: &str) -> Result<()> {
             // Try to check if interface exists
             #[cfg(target_os = "linux")]
             {
+                use std::process::Command;
                 let output = Command::new("ip")
                     .args(["link", "show", interface])
                     .output();
@@ -418,14 +646,12 @@ fn cmd_down(interface: &str) -> Result<()> {
             
             return Ok(());
         }
-        return stop_tunnel_from_pid(&alt_pid_file, interface);
-    }
+    };
     
-    stop_tunnel_from_pid(&pid_file, interface)
+    stop_tunnel_from_pid(&pid_file_to_use, interface)
 }
 
-fn stop_tunnel_from_pid(pid_file: &str, interface: &str) -> Result<()> {
-    use std::fs;
+fn stop_tunnel_from_pid(pid_file: &Path, interface: &str) -> Result<()> {
     
     let pid_str = fs::read_to_string(pid_file)
         .context("Failed to read PID file")?;
@@ -488,7 +714,7 @@ fn stop_tunnel_from_pid(pid_file: &str, interface: &str) -> Result<()> {
 
 /// Show tunnel status
 fn cmd_status(interface: Option<&str>, json: bool) -> Result<()> {
-    use std::fs;
+    use std::collections::HashSet;
     
     #[cfg(target_os = "linux")]
     use std::process::Command;
@@ -499,8 +725,8 @@ fn cmd_status(interface: Option<&str>, json: bool) -> Result<()> {
         println!("===============");
         println!();
         
-        // Check for running tunnels
-        let mut found_any = false;
+        // Track interfaces we've already shown to avoid duplicates
+        let mut shown_interfaces: HashSet<String> = HashSet::new();
         
         // Check /var/run/dybervpn/ for PID files
         if let Ok(entries) = fs::read_dir("/var/run/dybervpn") {
@@ -508,21 +734,23 @@ fn cmd_status(interface: Option<&str>, json: bool) -> Result<()> {
                 if let Some(name) = entry.file_name().to_str() {
                     if name.ends_with(".pid") {
                         let iface = name.trim_end_matches(".pid");
-                        show_interface_status(iface, json)?;
-                        found_any = true;
+                        if shown_interfaces.insert(iface.to_string()) {
+                            show_interface_status(iface, json)?;
+                        }
                     }
                 }
             }
         }
         
-        // Check /tmp for PID files
+        // Check /tmp for PID files (only if not already shown)
         if let Ok(entries) = fs::read_dir("/tmp") {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str() {
                     if name.starts_with("dybervpn-") && name.ends_with(".pid") {
                         let iface = name.trim_start_matches("dybervpn-").trim_end_matches(".pid");
-                        show_interface_status(iface, json)?;
-                        found_any = true;
+                        if shown_interfaces.insert(iface.to_string()) {
+                            show_interface_status(iface, json)?;
+                        }
                     }
                 }
             }
@@ -542,9 +770,8 @@ fn cmd_status(interface: Option<&str>, json: bool) -> Result<()> {
                         // Extract interface name
                         if let Some(name) = line.split(':').nth(1) {
                             let name = name.trim().split('@').next().unwrap_or("").trim();
-                            if !name.is_empty() {
+                            if !name.is_empty() && shown_interfaces.insert(name.to_string()) {
                                 show_interface_status(name, json)?;
-                                found_any = true;
                             }
                         }
                     }
@@ -552,7 +779,7 @@ fn cmd_status(interface: Option<&str>, json: bool) -> Result<()> {
             }
         }
         
-        if !found_any {
+        if shown_interfaces.is_empty() {
             println!("No DyberVPN tunnels found.");
             println!();
             println!("To start a tunnel:");
@@ -590,21 +817,12 @@ fn show_interface_status(interface: &str, json: bool) -> Result<()> {
     for pf in [&pid_file, &alt_pid_file] {
         if let Ok(pid_str) = fs::read_to_string(pf) {
             if let Ok(p) = pid_str.trim().parse::<i32>() {
-                // Check if process is actually running
-                #[cfg(unix)]
-                {
-                    let exists = unsafe { libc::kill(p, 0) } == 0;
-                    if exists {
-                        pid = Some(p);
-                        state = "running";
-                    } else {
-                        state = "stale (process not found)";
-                    }
-                }
-                #[cfg(not(unix))]
-                {
+                // Check if process is actually running using our robust function
+                if is_process_running(p) {
                     pid = Some(p);
-                    state = "running (unverified)";
+                    state = "running";
+                } else {
+                    state = "stale (process not found)";
                 }
             }
             break;

@@ -212,6 +212,8 @@ impl CryptoBackend for SoftwareBackend {
         let verifying_key = signing_key.verifying_key();
         
         // Get expanded signing key bytes (this is what we store)
+        // Note: to_expanded is deprecated, but we need it for key serialization
+        #[allow(deprecated)]
         let sk_expanded = signing_key.to_expanded();
         let sk_bytes: &[u8] = sk_expanded.as_ref();
         

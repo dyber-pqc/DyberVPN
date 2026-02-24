@@ -1,14 +1,15 @@
 [Unit]
-Description=DyberVPN Post-Quantum VPN Daemon
+Description=DyberVPN Post-Quantum VPN Daemon (%i)
 Documentation=https://github.com/dyberinc/dybervpn
 After=network-online.target
 Wants=network-online.target
+PartOf=dybervpn.target
 
 [Service]
 Type=simple
-# Use foreground mode (-f) with systemd - systemd handles daemon lifecycle
-ExecStart=/usr/local/bin/dybervpn up -c /etc/dybervpn/config.toml -f
-ExecStop=/usr/local/bin/dybervpn down dvpn0
+# %i is replaced with the instance name (e.g., dybervpn@dvpn0.service uses /etc/dybervpn/dvpn0.toml)
+ExecStart=/usr/local/bin/dybervpn up -c /etc/dybervpn/%i.toml -f
+ExecStop=/usr/local/bin/dybervpn down %i
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
@@ -37,7 +38,7 @@ LimitMEMLOCK=infinity
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=dybervpn
+SyslogIdentifier=dybervpn-%i
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target dybervpn.target

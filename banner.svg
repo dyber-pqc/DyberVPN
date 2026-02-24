@@ -1,0 +1,201 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 320">
+  <defs>
+    <!-- Dark purple gradient background -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1E1B4B"/>
+      <stop offset="100%" style="stop-color:#312E81"/>
+    </linearGradient>
+    
+    <!-- Logo gradient -->
+    <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#5B21B6"/>
+      <stop offset="100%" style="stop-color:#7C3AED"/>
+    </linearGradient>
+    
+    <!-- Core glow -->
+    <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#DDD6FE"/>
+      <stop offset="40%" style="stop-color:#A78BFA"/>
+      <stop offset="100%" style="stop-color:#5B21B6;stop-opacity:0"/>
+    </radialGradient>
+    
+    <!-- Text gradient -->
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#F5F3FF"/>
+      <stop offset="100%" style="stop-color:#DDD6FE"/>
+    </linearGradient>
+    
+    <!-- Glow filters -->
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <filter id="textGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1280" height="320" fill="url(#bgGrad)"/>
+  
+  <!-- Subtle lattice pattern across background -->
+  <g stroke="#3730A3" stroke-width="1" opacity="0.2">
+    <path d="M 0 80 L 80 40 L 160 80 L 160 160 L 80 200 L 0 160"/>
+    <path d="M 160 80 L 240 40 L 320 80 L 320 160 L 240 200 L 160 160"/>
+    <path d="M 320 80 L 400 40 L 480 80 L 480 160 L 400 200 L 320 160"/>
+    <path d="M 80 200 L 160 160 L 240 200 L 240 280 L 160 320 L 80 280"/>
+    <path d="M 240 200 L 320 160 L 400 200 L 400 280 L 320 320 L 240 280"/>
+    
+    <path d="M 800 0 L 880 40 L 880 120 L 800 160 L 720 120 L 720 40 Z"/>
+    <path d="M 960 80 L 1040 40 L 1120 80 L 1120 160 L 1040 200 L 960 160 Z"/>
+    <path d="M 1120 80 L 1200 40 L 1280 80 L 1280 160 L 1200 200 L 1120 160 Z"/>
+    <path d="M 880 200 L 960 160 L 1040 200 L 1040 280 L 960 320 L 880 280 Z"/>
+    <path d="M 1040 200 L 1120 160 L 1200 200 L 1200 280 L 1120 320 L 1040 280 Z"/>
+  </g>
+  
+  <!-- Flowing connection lines -->
+  <g stroke="#4C1D95" stroke-width="2" fill="none" opacity="0.4">
+    <path d="M 0 160 Q 200 120, 320 160 Q 440 200, 560 160"/>
+    <path d="M 720 160 Q 840 120, 960 160 Q 1080 200, 1280 160"/>
+  </g>
+  
+  <!-- Logo Section -->
+  <g transform="translate(80, 40)">
+    <!-- Logo background -->
+    <rect x="0" y="0" width="240" height="240" rx="48" fill="url(#logoGrad)"/>
+    
+    <!-- Inner shield -->
+    <path d="M 120 30 
+             L 195 60
+             L 195 140
+             Q 195 195, 120 220
+             Q 45 195, 45 140
+             L 45 60 Z" 
+          fill="#1E1B4B"/>
+    
+    <!-- Quantum beams -->
+    <g filter="url(#glow)">
+      <path d="M 50 90 Q 85 100, 105 120 Q 85 140, 50 150" 
+            fill="none" stroke="#A78BFA" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M 190 90 Q 155 100, 135 120 Q 155 140, 190 150" 
+            fill="none" stroke="#A78BFA" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M 100 50 Q 110 85, 120 105" 
+            fill="none" stroke="#A78BFA" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M 140 50 Q 130 85, 120 105" 
+            fill="none" stroke="#A78BFA" stroke-width="2.5" stroke-linecap="round"/>
+    </g>
+    
+    <!-- Central core -->
+    <circle cx="120" cy="120" r="28" fill="url(#coreGlow)" filter="url(#glow)"/>
+    <circle cx="120" cy="120" r="16" fill="#C4B5FD"/>
+    <circle cx="120" cy="120" r="8" fill="#EDE9FE"/>
+    
+    <!-- D letterform -->
+    <path d="M 108 105 L 108 135 M 108 105 Q 108 105, 120 100 Q 140 100, 140 120 Q 140 140, 120 140 Q 108 140, 108 135" 
+          fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    
+    <!-- Quantum dots -->
+    <g fill="#DDD6FE" filter="url(#glow)">
+      <circle cx="70" cy="65" r="3"/>
+      <circle cx="170" cy="65" r="3"/>
+      <circle cx="70" cy="175" r="3"/>
+      <circle cx="170" cy="175" r="3"/>
+    </g>
+  </g>
+  
+  <!-- Text Section -->
+  <g transform="translate(360, 85)">
+    <!-- Main title -->
+    <text x="0" y="70" 
+          font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" 
+          font-size="80" 
+          font-weight="800" 
+          fill="url(#textGrad)"
+          filter="url(#textGlow)"
+          letter-spacing="-0.02em">
+      DyberVPN
+    </text>
+    
+    <!-- Tagline -->
+    <text x="4" y="115" 
+          font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" 
+          font-size="22" 
+          font-weight="500" 
+          fill="#A78BFA"
+          letter-spacing="0.15em">
+      POST-QUANTUM SECURE
+    </text>
+    
+    <!-- Feature badges -->
+    <g transform="translate(0, 135)">
+      <rect x="0" y="0" width="95" height="30" rx="15" fill="#4C1D95"/>
+      <text x="47" y="20" 
+            font-family="ui-monospace, 'SF Mono', monospace" 
+            font-size="11" 
+            fill="#DDD6FE" 
+            text-anchor="middle"
+            font-weight="600">ML-KEM-768</text>
+      
+      <rect x="105" y="0" width="88" height="30" rx="15" fill="#4C1D95"/>
+      <text x="149" y="20" 
+            font-family="ui-monospace, 'SF Mono', monospace" 
+            font-size="11" 
+            fill="#DDD6FE" 
+            text-anchor="middle"
+            font-weight="600">ML-DSA-65</text>
+      
+      <rect x="203" y="0" width="100" height="30" rx="15" fill="#4C1D95"/>
+      <text x="253" y="20" 
+            font-family="ui-monospace, 'SF Mono', monospace" 
+            font-size="11" 
+            fill="#DDD6FE" 
+            text-anchor="middle"
+            font-weight="600">FIPS 203/204</text>
+    </g>
+  </g>
+  
+  <!-- Right side - abstract quantum network -->
+  <g transform="translate(920, 60)" opacity="0.6">
+    <!-- Network nodes -->
+    <circle cx="80" cy="100" r="8" fill="#7C3AED" filter="url(#glow)"/>
+    <circle cx="180" cy="50" r="6" fill="#8B5CF6" filter="url(#glow)"/>
+    <circle cx="280" cy="100" r="8" fill="#7C3AED" filter="url(#glow)"/>
+    <circle cx="180" cy="150" r="6" fill="#8B5CF6" filter="url(#glow)"/>
+    <circle cx="180" cy="100" r="12" fill="#A78BFA" filter="url(#glow)"/>
+    
+    <!-- Connections -->
+    <g stroke="#6D28D9" stroke-width="2" fill="none">
+      <line x1="88" y1="100" x2="168" y2="100"/>
+      <line x1="192" y1="100" x2="272" y2="100"/>
+      <line x1="180" y1="62" x2="180" y2="88"/>
+      <line x1="180" y1="112" x2="180" y2="138"/>
+      <line x1="88" y1="94" x2="174" y2="56"/>
+      <line x1="186" y1="56" x2="272" y2="94"/>
+      <line x1="88" y1="106" x2="174" y2="144"/>
+      <line x1="186" y1="144" x2="272" y2="106"/>
+    </g>
+    
+    <!-- Encryption symbol in center -->
+    <g transform="translate(168, 88)">
+      <rect x="4" y="8" width="16" height="14" rx="2" fill="#1E1B4B"/>
+      <path d="M 7 8 L 7 4 Q 7 0, 12 0 Q 17 0, 17 4 L 17 8" 
+            fill="none" stroke="#1E1B4B" stroke-width="2"/>
+    </g>
+  </g>
+  
+  <!-- Floating particles -->
+  <g fill="#8B5CF6" opacity="0.5">
+    <circle cx="600" cy="40" r="2"/>
+    <circle cx="750" cy="280" r="2"/>
+    <circle cx="1150" cy="50" r="1.5"/>
+    <circle cx="1230" cy="250" r="2"/>
+  </g>
+</svg>

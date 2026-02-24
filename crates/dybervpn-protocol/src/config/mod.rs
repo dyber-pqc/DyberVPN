@@ -36,6 +36,10 @@ pub struct InterfaceConfig {
     #[serde(default)]
     pub pq_private_key: Option<String>,
     
+    /// ML-DSA-65 signing private key (base64) - required for pq-only mode
+    #[serde(default)]
+    pub mldsa_private_key: Option<String>,
+    
     /// UDP port to listen on (server only)
     #[serde(default)]
     pub listen_port: Option<u16>,
@@ -105,6 +109,10 @@ pub struct PeerConfig {
     /// Peer's post-quantum public key (base64, ML-KEM-768)
     #[serde(default)]
     pub pq_public_key: Option<String>,
+    
+    /// Peer's ML-DSA-65 verification public key (base64) - required for pq-only mode
+    #[serde(default)]
+    pub mldsa_public_key: Option<String>,
     
     /// Allowed IP ranges for this peer (CIDR notation)
     pub allowed_ips: String,
@@ -195,6 +203,28 @@ impl Config {
             }
         }
         
+        // For pq-only mode, ML-DSA signing key is required
+        if self.interface.mode.uses_pq_auth() {
+            if self.interface.mldsa_private_key.is_none() {
+                return Err(ConfigError::MissingField(
+                    "mldsa_private_key is required for pq-only mode".into()
+                ));
+            }
+            
+            // Validate ML-DSA private key
+            if let Some(ref mldsa_key) = self.interface.mldsa_private_key {
+                let bytes = base64::decode(mldsa_key)
+                    .map_err(|_| ConfigError::InvalidKey("mldsa_private_key is not valid base64".into()))?;
+                if bytes.len() != crate::types::mldsa65::SECRET_KEY_SIZE {
+                    return Err(ConfigError::InvalidKey(format!(
+                        "mldsa_private_key has wrong size: {} (expected {})",
+                        bytes.len(),
+                        crate::types::mldsa65::SECRET_KEY_SIZE
+                    )));
+                }
+            }
+        }
+        
         // Validate peers
         for (i, peer) in self.peer.iter().enumerate() {
             let peer_bytes = base64::decode(&peer.public_key)
@@ -222,6 +252,26 @@ impl Config {
                         return Err(ConfigError::InvalidKey(format!(
                             "peer[{}].pq_public_key has wrong size: {} (expected {})",
                             i, bytes.len(), crate::types::mlkem768::PUBLIC_KEY_SIZE
+                        )));
+                    }
+                }
+            }
+            
+            // For pq-only mode, peer ML-DSA public key is required
+            if self.interface.mode.uses_pq_auth() {
+                if peer.mldsa_public_key.is_none() {
+                    return Err(ConfigError::MissingField(format!(
+                        "peer[{}].mldsa_public_key is required for pq-only mode", i
+                    )));
+                }
+                
+                if let Some(ref mldsa_pk) = peer.mldsa_public_key {
+                    let bytes = base64::decode(mldsa_pk)
+                        .map_err(|_| ConfigError::InvalidKey(format!("peer[{}].mldsa_public_key is not valid base64", i)))?;
+                    if bytes.len() != crate::types::mldsa65::PUBLIC_KEY_SIZE {
+                        return Err(ConfigError::InvalidKey(format!(
+                            "peer[{}].mldsa_public_key has wrong size: {} (expected {})",
+                            i, bytes.len(), crate::types::mldsa65::PUBLIC_KEY_SIZE
                         )));
                     }
                 }

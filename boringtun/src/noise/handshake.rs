@@ -279,6 +279,8 @@ struct HandshakeInitSentState {
     chaining_key: [u8; KEY_LEN],
     ephemeral_private: x25519::ReusableSecret,
     time_sent: Instant,
+    /// Store the init message we sent (for PQ-auth transcript reconstruction)
+    sent_init: Option<[u8; 148]>,
 }
 
 impl std::fmt::Debug for HandshakeInitSentState {
@@ -476,6 +478,18 @@ impl Handshake {
 
     pub(crate) fn clear_cookie(&mut self) {
         self.cookies.write_cookie = None;
+    }
+    
+    /// Get the init message we sent (for PQ-auth transcript reconstruction)
+    /// Returns None if we're not in InitSent state or if the init wasn't stored
+    pub(crate) fn get_sent_init(&self) -> Option<&[u8; 148]> {
+        match &self.state {
+            HandshakeState::InitSent(state) => state.sent_init.as_ref(),
+            _ => match &self.previous {
+                HandshakeState::InitSent(state) => state.sent_init.as_ref(),
+                _ => None,
+            },
+        }
     }
 
     // The index used is 24 bits for peer index, allowing for 16M active peers per server and 8 bits for cyclic session index
@@ -790,6 +804,11 @@ impl Handshake {
         hash = b2s_hash(&hash, encrypted_timestamp);
 
         let time_now = Instant::now();
+        
+        // Store a copy of the init message for PQ-auth transcript reconstruction
+        let mut sent_init = [0u8; 148];
+        sent_init.copy_from_slice(&dst[..148]);
+        
         self.previous = std::mem::replace(
             &mut self.state,
             HandshakeState::InitSent(HandshakeInitSentState {
@@ -798,6 +817,7 @@ impl Handshake {
                 hash,
                 ephemeral_private,
                 time_sent: time_now,
+                sent_init: Some(sent_init),
             }),
         );
 

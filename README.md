@@ -1,3 +1,5 @@
+![DyberVPN logo banner](./banner.svg)
+
 # DyberVPN
 
 **Post-Quantum VPN for Infrastructure You Control**
@@ -61,11 +63,11 @@ sudo dybervpn up -c client.toml -f
 
 ## Operating Modes
 
-| Mode | Key Exchange | Authentication | Use Case |
-|------|--------------|----------------|----------|
-| `hybrid` (default) | ML-KEM-768 + X25519 | Ed25519 | Production — defense-in-depth |
-| `pq-only` | ML-KEM-768 | ML-DSA-65 | Maximum quantum resistance |
-| `classic` | X25519 | Ed25519 | WireGuard compatibility |
+| Mode               | Key Exchange        | Authentication | Use Case                      |
+| ------------------ | ------------------- | -------------- | ----------------------------- |
+| `hybrid` (default) | ML-KEM-768 + X25519 | Ed25519        | Production — defense-in-depth |
+| `pq-only`          | ML-KEM-768          | ML-DSA-65      | Maximum quantum resistance    |
+| `classic`          | X25519              | Ed25519        | WireGuard compatibility       |
 
 ## Configuration
 
@@ -105,16 +107,16 @@ dybervpn benchmark   # Run crypto benchmarks
 
 Benchmarks on typical hardware (release build):
 
-| Algorithm | Operation | Time |
-|-----------|-----------|------|
-| ML-KEM-768 | keygen | ~82 µs |
-| ML-KEM-768 | encaps | ~49 µs |
-| ML-KEM-768 | decaps | ~51 µs |
-| ML-DSA-65 | keygen | ~278 µs |
-| ML-DSA-65 | sign | ~473 µs |
-| ML-DSA-65 | verify | ~161 µs |
-| X25519 | DH | ~44 µs |
-| Ed25519 | sign | ~28 µs |
+| Algorithm  | Operation | Time    |
+| ---------- | --------- | ------- |
+| ML-KEM-768 | keygen    | ~82 µs  |
+| ML-KEM-768 | encaps    | ~49 µs  |
+| ML-KEM-768 | decaps    | ~51 µs  |
+| ML-DSA-65  | keygen    | ~278 µs |
+| ML-DSA-65  | sign      | ~473 µs |
+| ML-DSA-65  | verify    | ~161 µs |
+| X25519     | DH        | ~44 µs  |
+| Ed25519    | sign      | ~28 µs  |
 
 **Full hybrid handshake: ~250-300 µs**
 

@@ -28,16 +28,26 @@ pub const MLDSA_SIGNATURE_SIZE: usize = 3309;
 
 /// Extended handshake message types for DyberVPN
 /// These use message type 5+ to avoid conflicts with standard WireGuard (1-4)
-pub const HANDSHAKE_INIT_PQ: u32 = 5;
-pub const HANDSHAKE_RESP_PQ: u32 = 6;
+pub const HANDSHAKE_INIT_PQ: u32 = 5;      // Hybrid mode (ML-KEM only, Ed25519 auth)
+pub const HANDSHAKE_RESP_PQ: u32 = 6;      // Hybrid mode response
+pub const HANDSHAKE_INIT_PQ_AUTH: u32 = 7; // PQ-only mode (ML-KEM + ML-DSA auth)
+pub const HANDSHAKE_RESP_PQ_AUTH: u32 = 8; // PQ-only mode response
 
-/// Size of PQ handshake init message
+/// Size of PQ handshake init message (hybrid mode - no PQ signature)
 /// Standard WireGuard init (148) + ML-KEM public key (1184) = 1332 bytes
 pub const HANDSHAKE_INIT_PQ_SZ: usize = 148 + MLKEM_PUBLIC_KEY_SIZE;
 
-/// Size of PQ handshake response message
+/// Size of PQ handshake response message (hybrid mode - no PQ signature)
 /// Standard WireGuard response (92) + ML-KEM ciphertext (1088) = 1180 bytes
 pub const HANDSHAKE_RESP_PQ_SZ: usize = 92 + MLKEM_CIPHERTEXT_SIZE;
+
+/// Size of PQ-only handshake init message (with ML-DSA signature)
+/// Standard WireGuard init (148) + ML-KEM public key (1184) + ML-DSA signature (3309) = 4641 bytes
+pub const HANDSHAKE_INIT_PQ_AUTH_SZ: usize = 148 + MLKEM_PUBLIC_KEY_SIZE + MLDSA_SIGNATURE_SIZE;
+
+/// Size of PQ-only handshake response message (with ML-DSA signature)
+/// Standard WireGuard response (92) + ML-KEM ciphertext (1088) + ML-DSA signature (3309) = 4489 bytes
+pub const HANDSHAKE_RESP_PQ_AUTH_SZ: usize = 92 + MLKEM_CIPHERTEXT_SIZE + MLDSA_SIGNATURE_SIZE;
 
 /// Post-quantum key material for a peer
 #[derive(Clone)]
@@ -109,6 +119,16 @@ impl MlDsaKeyPair {
         let secret_key = MlDsaSecretKey::from_bytes(secret_key)
             .map_err(|e| format!("Invalid ML-DSA secret key: {}", e))?;
         Ok(Self { public_key, secret_key })
+    }
+    
+    /// Get the public key
+    pub fn public_key(&self) -> &MlDsaPublicKey {
+        &self.public_key
+    }
+    
+    /// Get the secret key
+    pub fn secret_key(&self) -> &MlDsaSecretKey {
+        &self.secret_key
     }
 
     /// Sign a message
@@ -497,6 +517,162 @@ pub fn format_handshake_response_pq(
     dst[92..HANDSHAKE_RESP_PQ_SZ].copy_from_slice(pq_ciphertext);
 
     Ok(HANDSHAKE_RESP_PQ_SZ)
+}
+
+// =============================================================================
+// PQ-Only Mode Messages (with ML-DSA signatures)
+// =============================================================================
+
+/// Parse a PQ-only handshake init message (with ML-DSA signature)
+#[derive(Debug)]
+pub struct HandshakeInitPqAuth<'a> {
+    /// Standard WireGuard handshake init fields
+    pub sender_idx: u32,
+    pub unencrypted_ephemeral: &'a [u8; 32],
+    pub encrypted_static: &'a [u8],
+    pub encrypted_timestamp: &'a [u8],
+    /// PQ extension: initiator's ephemeral ML-KEM public key
+    pub pq_ephemeral_public: &'a [u8],
+    /// ML-DSA signature over the handshake transcript
+    pub mldsa_signature: &'a [u8],
+}
+
+/// Parse a PQ-only handshake response message (with ML-DSA signature)
+#[derive(Debug)]
+pub struct HandshakeResponsePqAuth<'a> {
+    /// Standard WireGuard handshake response fields
+    pub sender_idx: u32,
+    pub receiver_idx: u32,
+    pub unencrypted_ephemeral: &'a [u8; 32],
+    pub encrypted_nothing: &'a [u8],
+    /// PQ extension: ML-KEM ciphertext
+    pub pq_ciphertext: &'a [u8],
+    /// ML-DSA signature over the handshake transcript
+    pub mldsa_signature: &'a [u8],
+}
+
+impl<'a> HandshakeInitPqAuth<'a> {
+    /// Parse a PQ-only handshake init from bytes
+    pub fn parse(src: &'a [u8]) -> Result<Self, &'static str> {
+        if src.len() != HANDSHAKE_INIT_PQ_AUTH_SZ {
+            return Err("Invalid PQ-auth handshake init size");
+        }
+
+        let msg_type = u32::from_le_bytes(src[0..4].try_into().unwrap());
+        if msg_type != HANDSHAKE_INIT_PQ_AUTH {
+            return Err("Not a PQ-auth handshake init");
+        }
+
+        let pq_pk_end = 148 + MLKEM_PUBLIC_KEY_SIZE;
+        let sig_end = pq_pk_end + MLDSA_SIGNATURE_SIZE;
+
+        Ok(Self {
+            sender_idx: u32::from_le_bytes(src[4..8].try_into().unwrap()),
+            unencrypted_ephemeral: src[8..40].try_into().unwrap(),
+            encrypted_static: &src[40..88],
+            encrypted_timestamp: &src[88..116],
+            pq_ephemeral_public: &src[148..pq_pk_end],
+            mldsa_signature: &src[pq_pk_end..sig_end],
+        })
+    }
+}
+
+impl<'a> HandshakeResponsePqAuth<'a> {
+    /// Parse a PQ-only handshake response from bytes
+    pub fn parse(src: &'a [u8]) -> Result<Self, &'static str> {
+        if src.len() != HANDSHAKE_RESP_PQ_AUTH_SZ {
+            return Err("Invalid PQ-auth handshake response size");
+        }
+
+        let msg_type = u32::from_le_bytes(src[0..4].try_into().unwrap());
+        if msg_type != HANDSHAKE_RESP_PQ_AUTH {
+            return Err("Not a PQ-auth handshake response");
+        }
+
+        let ct_end = 92 + MLKEM_CIPHERTEXT_SIZE;
+        let sig_end = ct_end + MLDSA_SIGNATURE_SIZE;
+
+        Ok(Self {
+            sender_idx: u32::from_le_bytes(src[4..8].try_into().unwrap()),
+            receiver_idx: u32::from_le_bytes(src[8..12].try_into().unwrap()),
+            unencrypted_ephemeral: src[12..44].try_into().unwrap(),
+            encrypted_nothing: &src[44..60],
+            pq_ciphertext: &src[92..ct_end],
+            mldsa_signature: &src[ct_end..sig_end],
+        })
+    }
+}
+
+/// Format a PQ-only handshake init message (with ML-DSA signature)
+pub fn format_handshake_init_pq_auth(
+    classic_init: &[u8],     // 148 bytes
+    pq_ephemeral_pk: &[u8],  // 1184 bytes
+    mldsa_signature: &[u8],  // 3309 bytes
+    dst: &mut [u8],          // Must be at least HANDSHAKE_INIT_PQ_AUTH_SZ
+) -> Result<usize, &'static str> {
+    if classic_init.len() != 148 {
+        return Err("Invalid classic init size");
+    }
+    if pq_ephemeral_pk.len() != MLKEM_PUBLIC_KEY_SIZE {
+        return Err("Invalid PQ public key size");
+    }
+    if mldsa_signature.len() != MLDSA_SIGNATURE_SIZE {
+        return Err("Invalid ML-DSA signature size");
+    }
+    if dst.len() < HANDSHAKE_INIT_PQ_AUTH_SZ {
+        return Err("Destination buffer too small");
+    }
+
+    // Copy classic init
+    dst[..148].copy_from_slice(classic_init);
+    
+    // Change message type to PQ-auth variant
+    dst[0..4].copy_from_slice(&HANDSHAKE_INIT_PQ_AUTH.to_le_bytes());
+    
+    // Append PQ public key
+    let pq_pk_end = 148 + MLKEM_PUBLIC_KEY_SIZE;
+    dst[148..pq_pk_end].copy_from_slice(pq_ephemeral_pk);
+    
+    // Append ML-DSA signature
+    dst[pq_pk_end..HANDSHAKE_INIT_PQ_AUTH_SZ].copy_from_slice(mldsa_signature);
+
+    Ok(HANDSHAKE_INIT_PQ_AUTH_SZ)
+}
+
+/// Format a PQ-only handshake response message (with ML-DSA signature)
+pub fn format_handshake_response_pq_auth(
+    classic_resp: &[u8],     // 92 bytes
+    pq_ciphertext: &[u8],    // 1088 bytes
+    mldsa_signature: &[u8],  // 3309 bytes
+    dst: &mut [u8],          // Must be at least HANDSHAKE_RESP_PQ_AUTH_SZ
+) -> Result<usize, &'static str> {
+    if classic_resp.len() != 92 {
+        return Err("Invalid classic response size");
+    }
+    if pq_ciphertext.len() != MLKEM_CIPHERTEXT_SIZE {
+        return Err("Invalid PQ ciphertext size");
+    }
+    if mldsa_signature.len() != MLDSA_SIGNATURE_SIZE {
+        return Err("Invalid ML-DSA signature size");
+    }
+    if dst.len() < HANDSHAKE_RESP_PQ_AUTH_SZ {
+        return Err("Destination buffer too small");
+    }
+
+    // Copy classic response
+    dst[..92].copy_from_slice(classic_resp);
+    
+    // Change message type to PQ-auth variant
+    dst[0..4].copy_from_slice(&HANDSHAKE_RESP_PQ_AUTH.to_le_bytes());
+    
+    // Append PQ ciphertext
+    let ct_end = 92 + MLKEM_CIPHERTEXT_SIZE;
+    dst[92..ct_end].copy_from_slice(pq_ciphertext);
+    
+    // Append ML-DSA signature
+    dst[ct_end..HANDSHAKE_RESP_PQ_AUTH_SZ].copy_from_slice(mldsa_signature);
+
+    Ok(HANDSHAKE_RESP_PQ_AUTH_SZ)
 }
 
 #[cfg(test)]
