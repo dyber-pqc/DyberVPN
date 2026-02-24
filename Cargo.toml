@@ -1,25 +1,31 @@
+# DyberVPN Workspace Configuration
+# Copyright 2026 Dyber, Inc.
+
 [workspace]
 resolver = "2"
 members = [
-    "boringtun",                 # Original tunnel implementation
-    # "boringtun-cli",           # Skip for now - Unix only (daemonize)
-    "crates/dybervpn-protocol",  # New: PQC protocol layer
-    "crates/dybervpn-tunnel",    # New: Cross-platform tunnel management
-    "crates/dybervpn-metrics",   # New: Observability & metrics
-    "crates/dybervpn-cli",       # New: DyberVPN CLI
+    "boringtun",
+    "crates/dybervpn-protocol",
+    "crates/dybervpn-tunnel",
+    "crates/dybervpn-metrics",
+    "crates/dybervpn-cli",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
 license = "Apache-2.0"
-repository = "https://github.com/dyberinc/dybervpn"
-authors = ["Dyber, Inc. <engineering@dyber.com>"]
-keywords = ["vpn", "wireguard", "post-quantum", "cryptography", "pqc"]
-categories = ["network-programming", "cryptography"]
+repository = "https://github.com/dyber-pqc/DyberVPN"
+homepage = "https://github.com/dyber-pqc/DyberVPN"
+documentation = "https://github.com/dyber-pqc/DyberVPN/tree/main/docs"
+authors = ["Dyber, Inc. <engineering@dyber.org>"]
+keywords = ["vpn", "wireguard", "post-quantum", "cryptography", "pqc", "ml-kem", "ml-dsa"]
+categories = ["network-programming", "cryptography", "command-line-utilities"]
+description = "Post-quantum VPN with ML-KEM-768 and ML-DSA-65 - WireGuard compatible"
 
 [workspace.dependencies]
-# Classical Cryptography (from BoringTun)
+# Classical Cryptography
 x25519-dalek = { version = "2.0.1", features = ["reusable_secrets", "static_secrets"] }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
@@ -73,18 +79,23 @@ mock_instant = "0.3"
 # Secure memory
 zeroize = { version = "1.7", features = ["derive"] }
 
-# PQC - ML-KEM (Kyber) implementation
-ml-kem = "0.2"
-
-# PQC - ML-DSA (Dilithium) implementation
-ml-dsa = "0.1.0-rc.7"
+# Post-Quantum Cryptography
+ml-kem = "0.2"      # NIST FIPS 203 - ML-KEM-768
+ml-dsa = "0.1.0-rc.7"  # NIST FIPS 204 - ML-DSA-65
 
 [profile.release]
 lto = true
 codegen-units = 1
 opt-level = 3
 strip = true
+panic = "abort"
 
 [profile.bench]
 lto = true
 codegen-units = 1
+
+[profile.dev]
+opt-level = 1
+
+[profile.test]
+opt-level = 1

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability
+    url: mailto:security@dyber.org
+    about: Report security vulnerabilities privately via email
+  - name: Documentation
+    url: https://github.com/dyber-pqc/DyberVPN/tree/main/docs
+    about: Check the documentation before asking questions
+  - name: Discussions
+    url: https://github.com/dyber-pqc/DyberVPN/discussions
+    about: Ask questions and discuss ideas

@@ -146,6 +146,11 @@ DyberVPN aligns with NSA's Commercial National Security Algorithm Suite 2.0:
 
 ## Responsible Disclosure
 
-Report security vulnerabilities to: security@dyber.com
+Report security vulnerabilities to: **security@dyber.org**
 
 We follow coordinated disclosure practices and will credit researchers.
+See [SECURITY.md](../SECURITY.md) for full details.
+
+---
+
+*Copyright 2026 Dyber, Inc.*

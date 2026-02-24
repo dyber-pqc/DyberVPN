@@ -5,16 +5,15 @@
 | Version | Supported          |
 | ------- | ------------------ |
 | 0.1.x   | :white_check_mark: |
+| < 0.1   | :x:                |
 
 ## Reporting a Vulnerability
 
-We take security seriously. If you discover a security vulnerability in DyberVPN, please report it responsibly.
+**Please do NOT report security vulnerabilities through public GitHub issues.**
 
 ### How to Report
 
-**DO NOT** open a public GitHub issue for security vulnerabilities.
-
-Instead, please email: **security@dyber.io**
+Email your findings to: **security@dyber.org**
 
 Include:
 - Description of the vulnerability
@@ -22,18 +21,25 @@ Include:
 - Potential impact
 - Any suggested fixes (optional)
 
-### Response Timeline
-
-- **Initial Response**: Within 48 hours
-- **Status Update**: Within 7 days
-- **Fix Timeline**: Depends on severity (critical: days, high: weeks, medium: next release)
-
 ### What to Expect
 
-1. Acknowledgment of your report
-2. Assessment of the vulnerability
-3. Development of a fix
-4. Coordinated disclosure (we'll credit you unless you prefer anonymity)
+| Timeline | Action |
+|----------|--------|
+| 24 hours | Initial acknowledgment |
+| 72 hours | Preliminary assessment |
+| 7 days   | Detailed response with timeline |
+| 90 days  | Public disclosure (coordinated) |
+
+We follow responsible disclosure practices and will credit reporters (unless anonymity is requested).
+
+### PGP Key
+
+For sensitive reports, encrypt your email using our PGP key:
+
+```
+Key ID: [To be published]
+Fingerprint: [To be published]
+```
 
 ## Security Model
 
@@ -41,58 +47,119 @@ Include:
 
 DyberVPN is designed to protect against:
 
-1. **Harvest Now, Decrypt Later (HNDL)**: Adversaries recording encrypted traffic today to decrypt with future quantum computers
-2. **Man-in-the-Middle**: Active attackers attempting to intercept or modify traffic
-3. **Traffic Analysis**: Passive observers analyzing metadata (mitigated by VPN tunnel)
+1. **Passive network observers** - All traffic is encrypted
+2. **Active network attackers (MITM)** - Authenticated key exchange
+3. **Quantum adversaries (future)** - Post-quantum cryptography
+4. **"Harvest now, decrypt later"** - Hybrid PQC protects current sessions
 
-### Cryptographic Assumptions
+### Trust Boundaries
 
-| Component | Algorithm | Security Level | Assumption |
-|-----------|-----------|----------------|------------|
-| Key Exchange | ML-KEM-768 | NIST Level 3 | Module-LWE is hard |
-| Key Exchange | X25519 | ~128-bit | ECDLP is hard |
-| Authentication | ML-DSA-65 | NIST Level 3 | Module-LWE/SIS is hard |
-| Authentication | Ed25519 | ~128-bit | ECDLP is hard |
-| Encryption | ChaCha20-Poly1305 | 256-bit | Standard assumptions |
+```
+┌─────────────────────────────────────────────────────┐
+│                  Untrusted Network                  │
+│                    (Internet)                       │
+└─────────────────────┬───────────────────────────────┘
+                      │
+              ┌───────┴───────┐
+              │   DyberVPN    │  ← Cryptographic boundary
+              │   Tunnel      │
+              └───────┬───────┘
+                      │
+┌─────────────────────┴───────────────────────────────┐
+│               Trusted Local Network                 │
+│            (Behind VPN endpoint)                    │
+└─────────────────────────────────────────────────────┘
+```
 
-### Hybrid Security Rationale
+### Cryptographic Algorithms
 
-DyberVPN uses hybrid cryptography (classical + post-quantum) because:
+| Purpose | Algorithm | Standard | Security Level |
+|---------|-----------|----------|----------------|
+| Key Exchange | ML-KEM-768 + X25519 | FIPS 203 | NIST Level 3 |
+| Authentication (hybrid) | Ed25519 | RFC 8032 | 128-bit |
+| Authentication (pqonly) | ML-DSA-65 | FIPS 204 | NIST Level 3 |
+| Symmetric Encryption | ChaCha20-Poly1305 | RFC 8439 | 256-bit |
+| Key Derivation | HKDF-SHA256 | RFC 5869 | 256-bit |
+| Hashing | BLAKE2s | RFC 7693 | 256-bit |
 
-1. **Belt and Suspenders**: If ML-KEM has undiscovered weaknesses, X25519 still provides security
-2. **Transition Period**: We're in early days of PQC deployment; hybrid provides a safety net
-3. **Regulatory Alignment**: CNSA 2.0 recommends hybrid approaches during transition
+### Security Properties
 
-### Known Limitations
+- **Forward Secrecy**: Ephemeral keys per session
+- **Hybrid Security**: Both classical and PQ algorithms must be broken
+- **Authenticated Encryption**: AEAD for all data
+- **Replay Protection**: Nonce-based with anti-replay window
+- **Key Rotation**: Every 2 minutes or 2^64 messages
 
-1. **Metadata Protection**: VPN hides content but not the fact that communication is occurring
-2. **Endpoint Security**: DyberVPN cannot protect against compromised endpoints
-3. **Side Channels**: Software implementation may be vulnerable to timing attacks (use hardware acceleration for high-security deployments)
-4. **Key Management**: Security depends on proper key generation and storage
+## Known Limitations
+
+### Current Limitations
+
+1. **Platform Support**: Linux only (macOS experimental, Windows not yet)
+2. **Hardware Acceleration**: Software-only (QUAC 100 planned)
+3. **FIPS Validation**: Not yet validated (planned)
+4. **Audit Status**: Not yet independently audited
+
+### Planned Security Improvements
+
+- [ ] Independent security audit (Q2 2026)
+- [ ] FIPS 140-3 validation (Q4 2026)
+- [ ] Hardware-backed key storage
+- [ ] QUAC 100 QRNG integration
 
 ## Secure Development Practices
 
-- Memory-safe language (Rust)
-- No unsafe code in cryptographic paths (except FFI boundaries)
-- Dependency auditing with `cargo audit`
-- Continuous integration with security linters
+### Code Review
 
-## Cryptographic Library Choices
+- All changes require code review
+- Security-sensitive changes require security review
+- No direct commits to main branch
 
-| Library | Purpose | Rationale |
-|---------|---------|-----------|
-| ml-kem | ML-KEM-768 | RustCrypto implementation, NIST vectors |
-| ml-dsa | ML-DSA-65 | RustCrypto implementation, FIPS 204 compliant |
-| x25519-dalek | X25519 | Well-audited, widely used |
-| ed25519-dalek | Ed25519 | Well-audited, widely used |
-| chacha20poly1305 | AEAD | RustCrypto, constant-time |
-| blake2 | Hashing | Fast, secure, used in WireGuard |
+### Dependencies
 
-## Acknowledgments
+- Dependencies are regularly updated
+- `cargo audit` run in CI
+- Dependabot enabled for security updates
 
-We thank the following for their contributions to VPN and PQC security:
+### Testing
 
-- Jason A. Donenfeld (WireGuard protocol)
-- Cloudflare (BoringTun implementation)
-- NIST PQC team
-- RustCrypto contributors
+- Unit tests for all crypto operations
+- Integration tests for protocol flows
+- Fuzzing for parser and protocol code (planned)
+
+## Incident Response
+
+In case of a security incident:
+
+1. **Assess** - Determine scope and impact
+2. **Contain** - Limit damage
+3. **Notify** - Inform affected users
+4. **Remediate** - Fix the vulnerability
+5. **Review** - Post-incident analysis
+
+## Compliance
+
+### Standards Alignment
+
+- **NIST FIPS 203** (ML-KEM)
+- **NIST FIPS 204** (ML-DSA)
+- **CNSA 2.0** (Algorithm selection)
+
+### Planned Certifications
+
+- FIPS 140-3 Level 3 (crypto module)
+- Common Criteria (planned)
+- SOC 2 Type II (planned)
+
+## Security Contacts
+
+| Contact | Email |
+|---------|-------|
+| Security Team | security@dyber.org |
+| Engineering | engineering@dyber.org |
+| General | info@dyber.org |
+
+---
+
+*This security policy was last updated: February 24, 2026*
+
+*Copyright 2026 Dyber, Inc.*

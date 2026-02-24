@@ -1,19 +1,19 @@
-# DyberVPN Test Client Configuration
+# DyberVPN Test Server Configuration
 # Copyright 2026 Dyber, Inc.
 #
 # Generate real keys with: dybervpn genkey -m hybrid
 # DO NOT use placeholder values in production.
 
 [interface]
-name = "dvpn1"
+name = "dvpn0"
 private_key = "REPLACE_WITH_YOUR_X25519_PRIVATE_KEY"
 pq_private_key = "REPLACE_WITH_YOUR_MLKEM768_PRIVATE_KEY"
-address = "10.200.200.2/24"
+listen_port = 51820
+address = "10.0.0.1/24"
 mode = "hybrid"
 
 [[peer]]
-public_key = "REPLACE_WITH_SERVER_X25519_PUBLIC_KEY"
-pq_public_key = "REPLACE_WITH_SERVER_MLKEM768_PUBLIC_KEY"
-allowed_ips = "10.200.200.0/24"
-endpoint = "127.0.0.1:51820"
+public_key = "REPLACE_WITH_CLIENT_X25519_PUBLIC_KEY"
+pq_public_key = "REPLACE_WITH_CLIENT_MLKEM768_PUBLIC_KEY"
+allowed_ips = "10.0.0.2/32"
 persistent_keepalive = 25

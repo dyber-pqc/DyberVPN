@@ -1,6 +1,6 @@
 [Unit]
 Description=DyberVPN Post-Quantum VPN Daemon
-Documentation=https://github.com/dyberinc/dybervpn
+Documentation=https://github.com/dyber-pqc/DyberVPN
 After=network-online.target
 Wants=network-online.target
 

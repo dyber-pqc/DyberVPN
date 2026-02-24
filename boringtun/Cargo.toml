@@ -1,17 +1,17 @@
+# DyberVPN Core Tunnel — derived from Cloudflare BoringTun (BSD-3-Clause)
+# Copyright 2026 Dyber, Inc. (new code — Apache-2.0)
+# Copyright 2019 Cloudflare, Inc. (original code — BSD-3-Clause)
+
 [package]
 name = "boringtun"
-description = "an implementation of the WireGuard® protocol designed for portability and speed"
-version = "0.7.0"
-authors = [
-    "Noah Kennedy <nkennedy@cloudflare.com>",
-    "Andy Grover <agrover@cloudflare.com>",
-    "Jeff Hiner <jhiner@cloudflare.com>",
-]
-license = "BSD-3-Clause"
+description = "DyberVPN core tunnel engine with post-quantum cryptography — derived from BoringTun"
+version = "0.1.0"
+authors = ["Dyber, Inc. <engineering@dyber.org>"]
+license = "Apache-2.0 AND BSD-3-Clause"
 readme = "../README.md"
-repository = "https://github.com/cloudflare/boringtun"
-documentation = "https://docs.rs/boringtun/0.7.0/boringtun/"
-edition = "2018"
+repository = "https://github.com/dyber-pqc/DyberVPN"
+homepage = "https://dyber.org"
+edition = "2021"
 
 [features]
 default = []

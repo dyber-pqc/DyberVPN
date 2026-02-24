@@ -1,0 +1,23 @@
+# DyberVPN Docker Server Configuration
+# Copy this to deploy/server.toml and fill in your keys
+
+[interface]
+name = "dvpn0"
+listen_port = 51820
+address = "10.200.200.1/24"
+mode = "hybrid"  # or "pqonly" for full PQ auth
+
+# Generate with: dybervpn genkey -m hybrid
+private_key = "YOUR_PRIVATE_KEY_HERE"
+pq_private_key = "YOUR_PQ_PRIVATE_KEY_HERE"
+
+# Only needed for pqonly mode:
+# mldsa_private_key = "YOUR_MLDSA_PRIVATE_KEY_HERE"
+
+[[peer]]
+# Client's public keys
+public_key = "CLIENT_PUBLIC_KEY_HERE"
+pq_public_key = "CLIENT_PQ_PUBLIC_KEY_HERE"
+# Only needed for pqonly mode:
+# mldsa_public_key = "CLIENT_MLDSA_PUBLIC_KEY_HERE"
+allowed_ips = "10.200.200.2/32"

@@ -1,0 +1,202 @@
+# DyberVPN Release Pipeline
+# Copyright 2026 Dyber, Inc.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Create GitHub Release
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Get version
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: DyberVPN v${{ steps.get_version.outputs.version }}
+          body: |
+            ## DyberVPN v${{ steps.get_version.outputs.version }}
+            
+            ### Post-Quantum VPN for Infrastructure You Control
+            
+            See [CHANGELOG.md](https://github.com/dyber-pqc/DyberVPN/blob/main/CHANGELOG.md) for details.
+            
+            ### Cryptographic Algorithms
+            - **Key Exchange**: ML-KEM-768 + X25519 (FIPS 203)
+            - **Authentication**: ML-DSA-65 (FIPS 204) / Ed25519
+            - **Encryption**: ChaCha20-Poly1305
+            
+            ### Installation
+            
+            ```bash
+            # Download and extract
+            tar -xzf dybervpn-${{ steps.get_version.outputs.version }}-linux-x86_64.tar.gz
+            sudo mv dybervpn /usr/local/bin/
+            
+            # Or use Docker
+            docker pull ghcr.io/dyber-pqc/dybervpn:${{ steps.get_version.outputs.version }}
+            ```
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+
+  # Build binaries for each platform
+  build-binaries:
+    name: Build (${{ matrix.target }})
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: dybervpn
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            artifact: dybervpn
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: dybervpn
+          # macOS builds (when supported)
+          # - target: x86_64-apple-darwin
+          #   os: macos-latest
+          #   artifact: dybervpn
+          # - target: aarch64-apple-darwin
+          #   os: macos-latest
+          #   artifact: dybervpn
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bin dybervpn
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact }} dist/
+          cp README.md LICENSE CHANGELOG.md dist/
+          cd dist
+          tar -czf ../dybervpn-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz *
+          
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: dybervpn-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz
+          asset_name: dybervpn-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz
+          asset_content_type: application/gzip
+
+  # Build and push Docker image
+  docker:
+    name: Docker
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/dyber-pqc/dybervpn
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Update release notes with checksums
+  checksums:
+    name: Checksums
+    needs: [create-release, build-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        
+      - name: Generate checksums
+        run: |
+          sha256sum *.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          
+      - name: Upload checksums
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: SHA256SUMS.txt
+          asset_name: SHA256SUMS.txt
+          asset_content_type: text/plain

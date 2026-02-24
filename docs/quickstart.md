@@ -1,149 +1,147 @@
-# DyberVPN Quick Start Guide
+# Quick Start Guide
 
-## Installation
+Get DyberVPN running in 5 minutes.
 
-### From Source
+## Prerequisites
 
-```bash
-# Clone repository
-git clone https://github.com/dyberinc/dybervpn
-cd dybervpn
+- Linux (Ubuntu 20.04+ recommended)
+- Root access or CAP_NET_ADMIN capability
 
-# Build
-cargo build --release
-
-# Install (Linux)
-sudo install -m 755 target/release/dybervpn /usr/local/bin/
-```
-
-### Using Install Script (Linux)
+## Step 1: Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/dyberinc/dybervpn/main/deploy/install.sh | sudo bash
+# Download latest release
+curl -LO https://github.com/dyber-pqc/DyberVPN/releases/latest/download/dybervpn-linux-x86_64.tar.gz
+
+# Extract
+tar -xzf dybervpn-linux-x86_64.tar.gz
+
+# Install
+sudo mv dybervpn /usr/local/bin/
+sudo chmod +x /usr/local/bin/dybervpn
+
+# Verify
+dybervpn version
 ```
 
-## Server Setup
+## Step 2: Generate Keys
 
-### 1. Generate Server Configuration
+On **both** server and client, generate key pairs:
 
 ```bash
-dybervpn init --server --output /etc/dybervpn/server.toml
+# Server
+dybervpn genkey -m hybrid > server_keys.txt
+cat server_keys.txt
+
+# Client  
+dybervpn genkey -m hybrid > client_keys.txt
+cat client_keys.txt
 ```
 
-This generates:
-- Classical WireGuard keys (X25519)
-- Post-quantum keys (ML-KEM-768)
-- A template configuration file
+## Step 3: Configure Server
 
-### 2. Configure Firewall
-
-```bash
-# Allow UDP port 51820
-sudo ufw allow 51820/udp
-
-# Enable IP forwarding
-echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-dybervpn.conf
-sudo sysctl -p /etc/sysctl.d/99-dybervpn.conf
-```
-
-### 3. Start Server
-
-```bash
-# Using systemd
-sudo systemctl enable --now dybervpn
-
-# Or manually
-sudo dybervpn up /etc/dybervpn/server.toml --foreground
-```
-
-## Client Setup
-
-### 1. Generate Client Configuration
-
-```bash
-dybervpn init --client YOUR_SERVER_IP --output client.toml
-```
-
-### 2. Add Client to Server
-
-On the server, edit `/etc/dybervpn/server.toml` and add:
-
-```toml
-[[peer]]
-public_key = "CLIENT_PUBLIC_KEY"
-pq_public_key = "CLIENT_PQ_PUBLIC_KEY"
-allowed_ips = "10.0.0.2/32"
-```
-
-### 3. Add Server to Client
-
-Edit `client.toml` and add the server's public keys:
-
-```toml
-[[peer]]
-public_key = "SERVER_PUBLIC_KEY"
-pq_public_key = "SERVER_PQ_PUBLIC_KEY"
-endpoint = "YOUR_SERVER_IP:51820"
-allowed_ips = "0.0.0.0/0"
-persistent_keepalive = 25
-```
-
-### 4. Connect
-
-```bash
-dybervpn up client.toml --foreground
-```
-
-## Operating Modes
-
-| Mode | Key Exchange | Authentication | Use Case |
-|------|--------------|----------------|----------|
-| `hybrid` | ML-KEM-768 + X25519 | Ed25519 | Default, defense-in-depth |
-| `pq-only` | ML-KEM-768 | ML-DSA-65 | Maximum quantum resistance |
-| `classic` | X25519 | Ed25519 | WireGuard compatibility |
-
-Set mode in config:
+Create `/etc/dybervpn/server.toml`:
 
 ```toml
 [interface]
+name = "dvpn0"
+listen_port = 51820
+address = "10.200.200.1/24"
 mode = "hybrid"
+
+# Paste from server_keys.txt
+private_key = "YOUR_SERVER_PRIVATE_KEY"
+pq_private_key = "YOUR_SERVER_PQ_PRIVATE_KEY"
+
+[[peer]]
+# Paste CLIENT's public keys
+public_key = "CLIENT_PUBLIC_KEY"
+pq_public_key = "CLIENT_PQ_PUBLIC_KEY"
+allowed_ips = "10.200.200.2/32"
 ```
 
-## Verification
+## Step 4: Configure Client
 
-Check connection status:
+Create `/etc/dybervpn/client.toml`:
+
+```toml
+[interface]
+name = "dvpn0"
+address = "10.200.200.2/24"
+mode = "hybrid"
+
+# Paste from client_keys.txt
+private_key = "YOUR_CLIENT_PRIVATE_KEY"
+pq_private_key = "YOUR_CLIENT_PQ_PRIVATE_KEY"
+
+[[peer]]
+# Paste SERVER's public keys
+public_key = "SERVER_PUBLIC_KEY"
+pq_public_key = "SERVER_PQ_PUBLIC_KEY"
+endpoint = "your-server-ip:51820"
+allowed_ips = "10.200.200.0/24"
+persistent_keepalive = 25
+```
+
+## Step 5: Validate Configuration
 
 ```bash
-dybervpn status
+# Server
+dybervpn check -c /etc/dybervpn/server.toml
+
+# Client
+dybervpn check -c /etc/dybervpn/client.toml
 ```
 
-Validate configuration:
+## Step 6: Start VPN
+
+**Server:**
+```bash
+sudo dybervpn up -c /etc/dybervpn/server.toml -f
+```
+
+**Client (new terminal):**
+```bash
+sudo dybervpn up -c /etc/dybervpn/client.toml -f
+```
+
+## Step 7: Test Connection
 
 ```bash
-dybervpn check /path/to/config.toml
+# From client, ping server
+ping 10.200.200.1
+
+# From server, ping client
+ping 10.200.200.2
 ```
+
+## 🎉 Done!
+
+You now have a post-quantum VPN tunnel with:
+- **ML-KEM-768** key exchange (NIST FIPS 203)
+- **ChaCha20-Poly1305** encryption
+- **Ed25519** authentication
+
+## Next Steps
+
+- [Run as a service](deployment.md#systemd-service)
+- [Enable PQ-only mode](configuration.md#pq-only-mode) for ML-DSA authentication
+- [Docker deployment](deployment.md#docker)
 
 ## Troubleshooting
 
-### Permission Denied
+**Handshake timeout?**
+- Check firewall allows UDP port 51820
+- Verify endpoint IP is correct
+- Ensure keys match (server's public → client, client's public → server)
 
-DyberVPN requires root/admin privileges for network configuration:
-
+**Permission denied?**
 ```bash
-sudo dybervpn up config.toml --foreground
+sudo setcap cap_net_admin+ep /usr/local/bin/dybervpn
 ```
 
-### Handshake Failed
+**More help:** [Troubleshooting Guide](troubleshooting.md)
 
-1. Verify keys match between server and client
-2. Check firewall allows UDP 51820
-3. Ensure both use same mode (hybrid/classic)
+---
 
-### Connection Drops
-
-Add keepalive to client config:
-
-```toml
-[[peer]]
-persistent_keepalive = 25
-```
+*Copyright 2026 Dyber, Inc.*

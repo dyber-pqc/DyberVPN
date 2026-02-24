@@ -1,8 +1,8 @@
 # DyberVPN Docker Image
-# Post-Quantum VPN with ML-KEM-768 + X25519
+# Post-Quantum VPN with ML-KEM-768 + ML-DSA-65
 
 # Build stage
-FROM rust:1.77-slim-bookworm AS builder
+FROM rust:1.85-slim-bookworm AS builder
 
 WORKDIR /build
 
@@ -26,16 +26,16 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     iptables \
     ca-certificates \
+    libcap2-bin \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binary from builder
 COPY --from=builder /build/target/release/dybervpn /usr/local/bin/dybervpn
 
-# Create config directory
-RUN mkdir -p /etc/dybervpn
+# Create config and run directories
+RUN mkdir -p /etc/dybervpn /var/run/dybervpn
 
-# Set capabilities for network operations
-RUN setcap cap_net_admin+ep /usr/local/bin/dybervpn || true
+# Note: Use --cap-add=NET_ADMIN when running the container for TUN access
 
 EXPOSE 51820/udp
 

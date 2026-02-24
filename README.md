@@ -29,7 +29,7 @@ DyberVPN now supports **full post-quantum authentication** with ML-DSA-65 signat
 
 ```bash
 # Clone and build
-git clone https://github.com/dyberinc/dybervpn.git
+git clone https://github.com/dyber-pqc/DyberVPN.git
 cd dybervpn
 cargo build --release
 
