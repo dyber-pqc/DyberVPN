@@ -16,6 +16,17 @@ pub mod mlkem768 {
     pub const SHARED_SECRET_SIZE: usize = 32;
 }
 
+/// Size constants for ML-DSA-65 (NIST Security Level 3)
+/// FIPS 204 (formerly Dilithium-3)
+pub mod mldsa65 {
+    /// Public key size in bytes
+    pub const PUBLIC_KEY_SIZE: usize = 1952;
+    /// Secret key size in bytes
+    pub const SECRET_KEY_SIZE: usize = 4032;
+    /// Signature size in bytes
+    pub const SIGNATURE_SIZE: usize = 3309;
+}
+
 /// Size constants for X25519
 pub mod x25519 {
     /// Public key size in bytes
@@ -136,6 +147,105 @@ impl fmt::Debug for MlKemCiphertext {
 }
 
 // ============================================================================
+// ML-DSA (Post-Quantum Digital Signatures)
+// ============================================================================
+
+/// ML-DSA-65 public key (verification key)
+#[derive(Clone)]
+pub struct MlDsaPublicKey(pub Vec<u8>);
+
+impl MlDsaPublicKey {
+    /// Create from raw bytes
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, KeyError> {
+        if bytes.len() != mldsa65::PUBLIC_KEY_SIZE {
+            return Err(KeyError::InvalidLength {
+                expected: mldsa65::PUBLIC_KEY_SIZE,
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self(bytes.to_vec()))
+    }
+
+    /// Get raw bytes
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Encode as base64
+    pub fn to_base64(&self) -> String {
+        base64::encode(&self.0)
+    }
+
+    /// Decode from base64
+    pub fn from_base64(s: &str) -> Result<Self, KeyError> {
+        let bytes = base64::decode(s).map_err(|_| KeyError::InvalidEncoding)?;
+        Self::from_bytes(&bytes)
+    }
+}
+
+impl fmt::Debug for MlDsaPublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MlDsaPublicKey([{}...])", hex::encode(&self.0[..8.min(self.0.len())]))
+    }
+}
+
+/// ML-DSA-65 secret key (signing key, zeroized on drop)
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct MlDsaSecretKey(pub Vec<u8>);
+
+impl MlDsaSecretKey {
+    /// Create from raw bytes
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, KeyError> {
+        if bytes.len() != mldsa65::SECRET_KEY_SIZE {
+            return Err(KeyError::InvalidLength {
+                expected: mldsa65::SECRET_KEY_SIZE,
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self(bytes.to_vec()))
+    }
+
+    /// Get raw bytes
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for MlDsaSecretKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MlDsaSecretKey([REDACTED])")
+    }
+}
+
+/// ML-DSA-65 signature
+#[derive(Clone)]
+pub struct MlDsaSignature(pub Vec<u8>);
+
+impl MlDsaSignature {
+    /// Create from raw bytes
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, KeyError> {
+        if bytes.len() != mldsa65::SIGNATURE_SIZE {
+            return Err(KeyError::InvalidLength {
+                expected: mldsa65::SIGNATURE_SIZE,
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self(bytes.to_vec()))
+    }
+
+    /// Get raw bytes
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for MlDsaSignature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MlDsaSignature([{}...])", hex::encode(&self.0[..8.min(self.0.len())]))
+    }
+}
+
+// ============================================================================
 // Shared Secret
 // ============================================================================
 
@@ -180,7 +290,7 @@ pub enum OperatingMode {
     /// Hybrid ML-KEM-768 + X25519 key exchange, Ed25519 auth
     #[default]
     Hybrid,
-    /// Pure post-quantum: ML-KEM-768 key exchange, ML-DSA-65 auth (future)
+    /// Pure post-quantum: ML-KEM-768 key exchange, ML-DSA-65 auth
     PqOnly,
     /// Standard WireGuard: X25519 key exchange, Ed25519 auth
     Classic,
@@ -262,5 +372,13 @@ mod tests {
         assert_eq!("hybrid".parse::<OperatingMode>().unwrap(), OperatingMode::Hybrid);
         assert_eq!("pq-only".parse::<OperatingMode>().unwrap(), OperatingMode::PqOnly);
         assert_eq!("classic".parse::<OperatingMode>().unwrap(), OperatingMode::Classic);
+    }
+    
+    #[test]
+    fn test_mldsa_key_sizes() {
+        // Verify ML-DSA-65 sizes match FIPS 204 spec
+        assert_eq!(mldsa65::PUBLIC_KEY_SIZE, 1952);
+        assert_eq!(mldsa65::SECRET_KEY_SIZE, 4032);
+        assert_eq!(mldsa65::SIGNATURE_SIZE, 3309);
     }
 }

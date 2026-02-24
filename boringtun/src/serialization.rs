@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub(crate) struct KeyBytes(pub [u8; 32]);
 
 impl std::str::FromStr for KeyBytes {

@@ -4,6 +4,7 @@
 pub mod errors;
 pub mod handshake;
 pub mod hybrid_handshake;
+pub mod hybrid_integration;
 pub mod rate_limiter;
 
 mod session;
@@ -20,6 +21,8 @@ use std::convert::{TryFrom, TryInto};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::Duration;
+
+use dybervpn_protocol::OperatingMode;
 
 /// The default value to use for rate limiting, when no other rate limiter is defined
 const PEER_HANDSHAKE_RATE_LIMIT: u64 = 10;
@@ -67,8 +70,10 @@ impl<'a> From<WireGuardError> for TunnResult<'a> {
 pub struct Tunn {
     /// The handshake currently in progress
     handshake: handshake::Handshake,
-    /// Hybrid PQ handshake state (for DyberVPN modes)
-    hybrid_state: Option<HybridHandshakeState>,
+    /// Operating mode (Classic, Hybrid, PqOnly)
+    mode: OperatingMode,
+    /// PQ initiator state (when we initiate handshake)
+    pq_initiator_state: Option<hybrid_integration::HybridInitiatorState>,
     /// The N_SESSIONS most recent sessions, index is session id modulo N_SESSIONS
     sessions: [Option<session::Session>; N_SESSIONS],
     /// Index of most recently used session
@@ -230,7 +235,8 @@ impl Tunn {
                 index << 8,
                 preshared_key,
             ),
-            hybrid_state: None,
+            mode: OperatingMode::Classic,
+            pq_initiator_state: None,
             sessions: Default::default(),
             current: Default::default(),
             tx_bytes: Default::default(),
@@ -263,16 +269,18 @@ impl Tunn {
             index,
             rate_limiter,
         );
-        tunn.hybrid_state = Some(hybrid_state);
+        tunn.mode = hybrid_state.mode;
         tunn
     }
 
     /// Check if this tunnel uses hybrid PQ mode
     pub fn is_hybrid(&self) -> bool {
-        self.hybrid_state
-            .as_ref()
-            .map(|s| s.is_pq_enabled())
-            .unwrap_or(false)
+        self.mode.uses_pq_kex()
+    }
+
+    /// Get the operating mode
+    pub fn mode(&self) -> OperatingMode {
+        self.mode
     }
 
     /// Update the private key and clear existing sessions
@@ -363,17 +371,8 @@ impl Tunn {
             Packet::HandshakeResponse(p) => self.handle_handshake_response(p, dst),
             Packet::PacketCookieReply(p) => self.handle_cookie_reply(p),
             Packet::PacketData(p) => self.handle_data(p, dst),
-            // TODO: Implement PQ handshake handlers
-            Packet::HandshakeInitPq(p) => {
-                tracing::debug!("Received PQ handshake init from {}", p.sender_idx);
-                // For now, fall back to classic handshake
-                Err(WireGuardError::InvalidPacket)
-            }
-            Packet::HandshakeResponsePq(p) => {
-                tracing::debug!("Received PQ handshake response from {}", p.sender_idx);
-                // For now, fall back to classic handshake
-                Err(WireGuardError::InvalidPacket)
-            }
+            Packet::HandshakeInitPq(p) => self.handle_handshake_init_pq(p, dst),
+            Packet::HandshakeResponsePq(p) => self.handle_handshake_response_pq(p, dst),
         }
         .unwrap_or_else(TunnResult::from)
     }
@@ -403,6 +402,71 @@ impl Tunn {
         Ok(TunnResult::WriteToNetwork(packet))
     }
 
+    /// Handle PQ handshake initiation (responder side)
+    fn handle_handshake_init_pq<'a>(
+        &mut self,
+        p: hybrid_handshake::HandshakeInitPq,
+        dst: &'a mut [u8],
+    ) -> Result<TunnResult<'a>, WireGuardError> {
+        tracing::debug!(
+            message = "Received PQ handshake_initiation",
+            remote_idx = p.sender_idx
+        );
+
+        // First, process the classical part of the handshake
+        let classic_init = HandshakeInit {
+            sender_idx: p.sender_idx,
+            unencrypted_ephemeral: p.unencrypted_ephemeral,
+            encrypted_static: p.encrypted_static,
+            encrypted_timestamp: p.encrypted_timestamp,
+        };
+
+        // Get classical response - copy to temp buffer to avoid borrow issues
+        let mut temp_buf = [0u8; HANDSHAKE_RESP_SZ];
+        let (classic_packet, mut session) = self.handshake.receive_handshake_initialization(classic_init, dst)?;
+        temp_buf.copy_from_slice(classic_packet);
+
+        // Now handle PQ part: encapsulate to initiator's ephemeral PQ public key
+        let pq_responder = hybrid_integration::HybridResponderState::new(
+            self.mode,
+            p.pq_ephemeral_public,
+        )?;
+
+        // Derive hybrid session keys
+        // Note: For responder, we swap the keys - our sending key is initiator's receiving key
+        let (initiator_send, initiator_recv) = hybrid_integration::derive_hybrid_session_keys(
+            session.chaining_key(),
+            Some(&pq_responder.pq_shared_secret),
+        );
+
+        // Update session with hybrid keys (swapped for responder)
+        session.set_hybrid_keys(initiator_recv, initiator_send);
+
+        // Format PQ response: classic response + ML-KEM ciphertext
+        // Now we can safely use dst since classic_packet borrow is released
+        let response_len = hybrid_handshake::format_handshake_response_pq(
+            &temp_buf,
+            &pq_responder.pq_ciphertext,
+            dst,
+        ).map_err(|_| WireGuardError::DestinationBufferTooSmall)?;
+
+        // Store new session in ring buffer
+        let index = session.local_index();
+        self.sessions[index % N_SESSIONS] = Some(session);
+
+        self.timer_tick(TimerName::TimeLastPacketReceived);
+        self.timer_tick(TimerName::TimeLastPacketSent);
+        self.timer_tick_session_established(false, index);
+
+        tracing::info!(
+            message = "Sending PQ handshake_response",
+            local_idx = index,
+            pq_mode = ?self.mode
+        );
+
+        Ok(TunnResult::WriteToNetwork(&mut dst[..response_len]))
+    }
+
     fn handle_handshake_response<'a>(
         &mut self,
         p: HandshakeResponse,
@@ -429,6 +493,67 @@ impl Tunn {
         tracing::debug!("Sending keepalive");
 
         Ok(TunnResult::WriteToNetwork(keepalive_packet)) // Send a keepalive as a response
+    }
+
+    /// Handle PQ handshake response (initiator side)
+    fn handle_handshake_response_pq<'a>(
+        &mut self,
+        p: hybrid_handshake::HandshakeResponsePq,
+        dst: &'a mut [u8],
+    ) -> Result<TunnResult<'a>, WireGuardError> {
+        tracing::debug!(
+            message = "Received PQ handshake_response",
+            local_idx = p.receiver_idx,
+            remote_idx = p.sender_idx
+        );
+
+        // First, process the classical part
+        let classic_resp = HandshakeResponse {
+            sender_idx: p.sender_idx,
+            receiver_idx: p.receiver_idx,
+            unencrypted_ephemeral: p.unencrypted_ephemeral,
+            encrypted_nothing: p.encrypted_nothing,
+        };
+
+        let mut session = self.handshake.receive_handshake_response(classic_resp)?;
+
+        // Now handle PQ part: decapsulate using our ephemeral secret key
+        let pq_shared_secret = if let Some(ref mut pq_state) = self.pq_initiator_state {
+            pq_state.process_response(p.pq_ciphertext)?
+        } else {
+            return Err(WireGuardError::UnexpectedPacket);
+        };
+
+        // Derive hybrid session keys
+        let (sending_key, receiving_key) = hybrid_integration::derive_hybrid_session_keys(
+            session.chaining_key(),
+            Some(&pq_shared_secret),
+        );
+
+        // Update session with hybrid keys
+        session.set_hybrid_keys(sending_key, receiving_key);
+
+        // Clear PQ initiator state
+        self.pq_initiator_state = None;
+
+        let keepalive_packet = session.format_packet_data(&[], dst);
+
+        // Store new session in ring buffer
+        let l_idx = session.local_index();
+        let index = l_idx % N_SESSIONS;
+        self.sessions[index] = Some(session);
+
+        self.timer_tick(TimerName::TimeLastPacketReceived);
+        self.timer_tick_session_established(true, index);
+        self.set_current_session(l_idx);
+
+        tracing::info!(
+            message = "PQ handshake complete",
+            local_idx = l_idx,
+            pq_mode = ?self.mode
+        );
+
+        Ok(TunnResult::WriteToNetwork(keepalive_packet))
     }
 
     fn handle_cookie_reply<'a>(
@@ -508,15 +633,57 @@ impl Tunn {
 
         let starting_new_handshake = !self.handshake.is_in_progress();
 
+        // For hybrid mode, generate PQ ephemeral keypair
+        if self.is_hybrid() {
+            match hybrid_integration::HybridInitiatorState::new(self.mode) {
+                Ok(pq_state) => {
+                    self.pq_initiator_state = Some(pq_state);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to generate PQ ephemeral key: {:?}", e);
+                    return TunnResult::Err(e);
+                }
+            }
+        }
+
         match self.handshake.format_handshake_initiation(dst) {
-            Ok(packet) => {
-                tracing::debug!("Sending handshake_initiation");
+            Ok(classic_packet) => {
+                // Get the length of classic packet before any borrowing issues
+                let classic_len = classic_packet.len();
+                
+                // If hybrid mode, append PQ public key
+                let final_len = if self.is_hybrid() {
+                    if let Some(ref pq_state) = self.pq_initiator_state {
+                        // For hybrid mode, we need to:
+                        // 1. Change message type from 1 to HANDSHAKE_INIT_PQ (5)
+                        // 2. Append ML-KEM public key after the classic init
+                        
+                        // Change message type in-place
+                        dst[0..4].copy_from_slice(&HANDSHAKE_INIT_PQ.to_le_bytes());
+                        
+                        // Append PQ public key
+                        let pq_pk_bytes = &pq_state.pq_ephemeral_pk;
+                        dst[classic_len..classic_len + pq_pk_bytes.len()].copy_from_slice(pq_pk_bytes);
+                        
+                        let total_len = classic_len + pq_pk_bytes.len();
+                        tracing::info!(
+                            message = "Sending PQ handshake_initiation",
+                            pq_mode = ?self.mode
+                        );
+                        total_len
+                    } else {
+                        classic_len
+                    }
+                } else {
+                    tracing::debug!("Sending handshake_initiation");
+                    classic_len
+                };
 
                 if starting_new_handshake {
                     self.timer_tick(TimerName::TimeLastHandshakeStarted);
                 }
                 self.timer_tick(TimerName::TimeLastPacketSent);
-                TunnResult::WriteToNetwork(packet)
+                TunnResult::WriteToNetwork(&mut dst[..final_len])
             }
             Err(e) => TunnResult::Err(e),
         }
@@ -668,6 +835,41 @@ mod tests {
         let my_tun = Tunn::new(my_secret_key, their_public_key, None, None, my_idx, None);
 
         let their_tun = Tunn::new(their_secret_key, my_public_key, None, None, their_idx, None);
+
+        (my_tun, their_tun)
+    }
+
+    fn create_two_hybrid_tuns() -> (Tunn, Tunn) {
+        let my_secret_key = x25519_dalek::StaticSecret::random_from_rng(OsRng);
+        let my_public_key = x25519_dalek::PublicKey::from(&my_secret_key);
+        let my_idx = OsRng.next_u32();
+
+        let their_secret_key = x25519_dalek::StaticSecret::random_from_rng(OsRng);
+        let their_public_key = x25519_dalek::PublicKey::from(&their_secret_key);
+        let their_idx = OsRng.next_u32();
+
+        let my_hybrid_state = HybridHandshakeState::new(OperatingMode::Hybrid);
+        let their_hybrid_state = HybridHandshakeState::new(OperatingMode::Hybrid);
+
+        let my_tun = Tunn::new_hybrid(
+            my_secret_key,
+            their_public_key,
+            None,
+            None,
+            my_idx,
+            None,
+            my_hybrid_state,
+        );
+
+        let their_tun = Tunn::new_hybrid(
+            their_secret_key,
+            my_public_key,
+            None,
+            None,
+            their_idx,
+            None,
+            their_hybrid_state,
+        );
 
         (my_tun, their_tun)
     }
@@ -835,6 +1037,80 @@ mod tests {
         let mut my_dst = [0u8; 1024];
         let mut their_dst = [0u8; 1024];
 
+        let sent_packet_buf = create_ipv4_udp_packet();
+
+        let data = my_tun.encapsulate(&sent_packet_buf, &mut my_dst);
+        assert!(matches!(data, TunnResult::WriteToNetwork(_)));
+        let data = if let TunnResult::WriteToNetwork(sent) = data {
+            sent
+        } else {
+            unreachable!();
+        };
+
+        let data = their_tun.decapsulate(None, data, &mut their_dst);
+        assert!(matches!(data, TunnResult::WriteToTunnelV4(..)));
+        let recv_packet_buf = if let TunnResult::WriteToTunnelV4(recv, _addr) = data {
+            recv
+        } else {
+            unreachable!();
+        };
+        assert_eq!(sent_packet_buf, recv_packet_buf);
+    }
+
+    // PQ Hybrid tests
+    #[test]
+    fn hybrid_tunnel_creation() {
+        let (my_tun, their_tun) = create_two_hybrid_tuns();
+        assert!(my_tun.is_hybrid());
+        assert!(their_tun.is_hybrid());
+        assert_eq!(my_tun.mode(), OperatingMode::Hybrid);
+        assert_eq!(their_tun.mode(), OperatingMode::Hybrid);
+    }
+
+    #[test]
+    fn hybrid_handshake_init() {
+        let (mut my_tun, _their_tun) = create_two_hybrid_tuns();
+        let init = create_handshake_init(&mut my_tun);
+        
+        // Should be a PQ init (larger than classic)
+        assert_eq!(init.len(), HANDSHAKE_INIT_PQ_SZ);
+        
+        let packet = Tunn::parse_incoming_packet(&init).unwrap();
+        assert!(matches!(packet, Packet::HandshakeInitPq(_)));
+    }
+
+    #[test]
+    fn hybrid_full_handshake() {
+        let (mut my_tun, mut their_tun) = create_two_hybrid_tuns();
+        
+        // Initiator sends PQ handshake init
+        let init = create_handshake_init(&mut my_tun);
+        assert_eq!(init.len(), HANDSHAKE_INIT_PQ_SZ);
+        
+        // Responder processes and returns PQ response
+        let resp = create_handshake_response(&mut their_tun, &init);
+        assert_eq!(resp.len(), HANDSHAKE_RESP_PQ_SZ);
+        
+        // Initiator processes response and sends keepalive
+        let keepalive = parse_handshake_resp(&mut my_tun, &resp);
+        
+        // Responder receives keepalive
+        parse_keepalive(&mut their_tun, &keepalive);
+    }
+
+    #[test]
+    fn hybrid_one_ip_packet() {
+        let (mut my_tun, mut their_tun) = create_two_hybrid_tuns();
+        
+        // Complete handshake
+        let init = create_handshake_init(&mut my_tun);
+        let resp = create_handshake_response(&mut their_tun, &init);
+        let keepalive = parse_handshake_resp(&mut my_tun, &resp);
+        parse_keepalive(&mut their_tun, &keepalive);
+        
+        // Now send data
+        let mut my_dst = [0u8; 1024];
+        let mut their_dst = [0u8; 1024];
         let sent_packet_buf = create_ipv4_udp_packet();
 
         let data = my_tun.encapsulate(&sent_packet_buf, &mut my_dst);

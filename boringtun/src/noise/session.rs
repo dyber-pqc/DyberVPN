@@ -14,6 +14,8 @@ pub struct Session {
     sender: LessSafeKey,
     sending_key_counter: AtomicUsize,
     receiving_key_counter: Mutex<ReceivingKeyCounterValidator>,
+    /// Chaining key for hybrid key derivation (stored for potential rekeying)
+    chaining_key: [u8; 32],
 }
 
 impl std::fmt::Debug for Session {
@@ -167,7 +169,28 @@ impl Session {
             sender: LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &sending_key).unwrap()),
             sending_key_counter: AtomicUsize::new(0),
             receiving_key_counter: Mutex::new(Default::default()),
+            chaining_key: [0u8; 32], // Will be set if needed for hybrid
         }
+    }
+
+    /// Get the chaining key (for hybrid key derivation)
+    pub(super) fn chaining_key(&self) -> &[u8; 32] {
+        &self.chaining_key
+    }
+
+    /// Set the chaining key (used during handshake for hybrid derivation)
+    #[allow(dead_code)]
+    pub(super) fn set_chaining_key(&mut self, key: [u8; 32]) {
+        self.chaining_key = key;
+    }
+
+    /// Set hybrid session keys (after PQ key exchange)
+    pub(super) fn set_hybrid_keys(&mut self, sending_key: [u8; 32], receiving_key: [u8; 32]) {
+        self.sender = LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &sending_key).unwrap());
+        self.receiver = LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &receiving_key).unwrap());
+        // Reset counters for new keys
+        self.sending_key_counter.store(0, Ordering::Relaxed);
+        *self.receiving_key_counter.lock() = Default::default();
     }
 
     pub(super) fn local_index(&self) -> usize {

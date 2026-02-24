@@ -15,7 +15,7 @@ use dybervpn_protocol::{
     OperatingMode,
 };
 
-/// ML-KEM-768 key sizes
+/// ML-KEM-768 key sizes (NIST FIPS 203)
 pub const MLKEM_PUBLIC_KEY_SIZE: usize = 1184;
 pub const MLKEM_SECRET_KEY_SIZE: usize = 2400;
 pub const MLKEM_CIPHERTEXT_SIZE: usize = 1088;
@@ -55,6 +55,15 @@ impl PqKeyPair {
             secret_key,
         })
     }
+
+    /// Create from raw bytes
+    pub fn from_bytes(public_key: &[u8], secret_key: &[u8]) -> Result<Self, String> {
+        let public_key = MlKemPublicKey::from_bytes(public_key)
+            .map_err(|e| format!("Invalid public key: {}", e))?;
+        let secret_key = MlKemSecretKey::from_bytes(secret_key)
+            .map_err(|e| format!("Invalid secret key: {}", e))?;
+        Ok(Self { public_key, secret_key })
+    }
 }
 
 impl std::fmt::Debug for PqKeyPair {
@@ -90,6 +99,22 @@ impl HybridHandshakeState {
             mode,
             static_pq_keypair: None,
             peer_pq_public_key: None,
+            ephemeral_pq_keypair: None,
+            pq_ciphertext: None,
+            pq_shared_secret: None,
+        }
+    }
+
+    /// Create with static keys
+    pub fn with_keys(
+        mode: OperatingMode,
+        static_keypair: Option<PqKeyPair>,
+        peer_public_key: Option<MlKemPublicKey>,
+    ) -> Self {
+        Self {
+            mode,
+            static_pq_keypair: static_keypair,
+            peer_pq_public_key: peer_public_key,
             ephemeral_pq_keypair: None,
             pq_ciphertext: None,
             pq_shared_secret: None,
@@ -183,7 +208,13 @@ impl HybridHandshakeState {
         Ok(ss)
     }
 
-    /// Combine X25519 and ML-KEM shared secrets
+    /// Get the PQ shared secret if available
+    pub fn get_pq_shared_secret(&self) -> Option<&[u8; 32]> {
+        self.pq_shared_secret.as_ref()
+    }
+
+    /// Combine X25519 and ML-KEM shared secrets using BLAKE2s
+    /// Returns combined chaining key for the Noise protocol
     pub fn combine_secrets(
         x25519_ss: &[u8; 32],
         mlkem_ss: &[u8; 32],
@@ -277,6 +308,64 @@ impl<'a> HandshakeResponsePq<'a> {
     }
 }
 
+/// Format a PQ handshake init message
+/// This appends the ML-KEM public key to a standard WireGuard init
+pub fn format_handshake_init_pq(
+    classic_init: &[u8],     // 148 bytes
+    pq_ephemeral_pk: &[u8],  // 1184 bytes
+    dst: &mut [u8],          // Must be at least HANDSHAKE_INIT_PQ_SZ
+) -> Result<usize, &'static str> {
+    if classic_init.len() != 148 {
+        return Err("Invalid classic init size");
+    }
+    if pq_ephemeral_pk.len() != MLKEM_PUBLIC_KEY_SIZE {
+        return Err("Invalid PQ public key size");
+    }
+    if dst.len() < HANDSHAKE_INIT_PQ_SZ {
+        return Err("Destination buffer too small");
+    }
+
+    // Copy classic init
+    dst[..148].copy_from_slice(classic_init);
+    
+    // Change message type to PQ variant
+    dst[0..4].copy_from_slice(&HANDSHAKE_INIT_PQ.to_le_bytes());
+    
+    // Append PQ public key
+    dst[148..HANDSHAKE_INIT_PQ_SZ].copy_from_slice(pq_ephemeral_pk);
+
+    Ok(HANDSHAKE_INIT_PQ_SZ)
+}
+
+/// Format a PQ handshake response message
+/// This appends the ML-KEM ciphertext to a standard WireGuard response
+pub fn format_handshake_response_pq(
+    classic_resp: &[u8],    // 92 bytes
+    pq_ciphertext: &[u8],   // 1088 bytes
+    dst: &mut [u8],         // Must be at least HANDSHAKE_RESP_PQ_SZ
+) -> Result<usize, &'static str> {
+    if classic_resp.len() != 92 {
+        return Err("Invalid classic response size");
+    }
+    if pq_ciphertext.len() != MLKEM_CIPHERTEXT_SIZE {
+        return Err("Invalid PQ ciphertext size");
+    }
+    if dst.len() < HANDSHAKE_RESP_PQ_SZ {
+        return Err("Destination buffer too small");
+    }
+
+    // Copy classic response
+    dst[..92].copy_from_slice(classic_resp);
+    
+    // Change message type to PQ variant
+    dst[0..4].copy_from_slice(&HANDSHAKE_RESP_PQ.to_le_bytes());
+    
+    // Append PQ ciphertext
+    dst[92..HANDSHAKE_RESP_PQ_SZ].copy_from_slice(pq_ciphertext);
+
+    Ok(HANDSHAKE_RESP_PQ_SZ)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +436,78 @@ mod tests {
         // Verify our calculations
         assert_eq!(HANDSHAKE_INIT_PQ_SZ, 148 + 1184); // 1332
         assert_eq!(HANDSHAKE_RESP_PQ_SZ, 92 + 1088); // 1180
+    }
+
+    #[test]
+    fn test_format_handshake_init_pq() {
+        let classic_init = vec![0u8; 148];
+        let pq_pk = vec![0xABu8; MLKEM_PUBLIC_KEY_SIZE];
+        let mut dst = vec![0u8; HANDSHAKE_INIT_PQ_SZ];
+
+        let size = format_handshake_init_pq(&classic_init, &pq_pk, &mut dst).unwrap();
+        assert_eq!(size, HANDSHAKE_INIT_PQ_SZ);
+        
+        // Check message type was updated
+        let msg_type = u32::from_le_bytes(dst[0..4].try_into().unwrap());
+        assert_eq!(msg_type, HANDSHAKE_INIT_PQ);
+        
+        // Check PQ key was appended
+        assert_eq!(&dst[148..], &pq_pk[..]);
+    }
+
+    #[test]
+    fn test_format_handshake_response_pq() {
+        let classic_resp = vec![0u8; 92];
+        let pq_ct = vec![0xCDu8; MLKEM_CIPHERTEXT_SIZE];
+        let mut dst = vec![0u8; HANDSHAKE_RESP_PQ_SZ];
+
+        let size = format_handshake_response_pq(&classic_resp, &pq_ct, &mut dst).unwrap();
+        assert_eq!(size, HANDSHAKE_RESP_PQ_SZ);
+        
+        // Check message type was updated
+        let msg_type = u32::from_le_bytes(dst[0..4].try_into().unwrap());
+        assert_eq!(msg_type, HANDSHAKE_RESP_PQ);
+        
+        // Check ciphertext was appended
+        assert_eq!(&dst[92..], &pq_ct[..]);
+    }
+
+    #[test]
+    fn test_full_pq_handshake_flow() {
+        // This simulates the complete PQ handshake flow
+        
+        // 1. Initiator generates ephemeral PQ keypair
+        let mut initiator = HybridHandshakeState::new(OperatingMode::Hybrid);
+        let initiator_pk = initiator.generate_ephemeral().unwrap();
+        let initiator_pk_bytes = initiator_pk.as_bytes().to_vec();
+        
+        // 2. Responder receives init, encapsulates to initiator's ephemeral PQ key
+        let mut responder = HybridHandshakeState::new(OperatingMode::Hybrid);
+        let (ciphertext, responder_pq_ss) = responder
+            .encapsulate_to_peer(&initiator_pk_bytes)
+            .unwrap();
+        
+        // 3. Initiator receives response, decapsulates
+        let initiator_pq_ss = initiator.decapsulate(&ciphertext).unwrap();
+        
+        // 4. Both sides now have matching PQ shared secrets
+        assert_eq!(initiator_pq_ss, responder_pq_ss);
+        
+        // 5. Combine with X25519 shared secret (simulated)
+        let x25519_ss = [0x42u8; 32];
+        let chaining_key = [0x00u8; 32];
+        
+        let initiator_combined = HybridHandshakeState::combine_secrets(
+            &x25519_ss,
+            &initiator_pq_ss,
+            &chaining_key,
+        );
+        let responder_combined = HybridHandshakeState::combine_secrets(
+            &x25519_ss,
+            &responder_pq_ss,
+            &chaining_key,
+        );
+        
+        assert_eq!(initiator_combined, responder_combined);
     }
 }

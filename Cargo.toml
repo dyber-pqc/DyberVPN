@@ -4,6 +4,8 @@ members = [
     "boringtun",                 # Original tunnel implementation
     # "boringtun-cli",           # Skip for now - Unix only (daemonize)
     "crates/dybervpn-protocol",  # New: PQC protocol layer
+    "crates/dybervpn-tunnel",    # New: Cross-platform tunnel management
+    "crates/dybervpn-metrics",   # New: Observability & metrics
     "crates/dybervpn-cli",       # New: DyberVPN CLI
 ]
 

@@ -15,7 +15,6 @@ use aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{Key, XChaCha20Poly1305};
 use parking_lot::Mutex;
 use rand_core::{OsRng, RngCore};
-use ring::constant_time::verify_slices_are_equal;
 
 const COOKIE_REFRESH: u64 = 128; // Use 128 and not 120 so the compiler can optimize out the division
 const COOKIE_SIZE: usize = 16;
@@ -25,6 +24,29 @@ const COOKIE_NONCE_SIZE: usize = 24;
 const RESET_PERIOD: u64 = 1;
 
 type Cookie = [u8; COOKIE_SIZE];
+
+/// Constant-time comparison of two slices
+/// Returns Ok(()) if slices are equal, Err(()) if not
+#[inline(never)]
+fn constant_time_compare(a: &[u8], b: &[u8]) -> Result<(), ()> {
+    if a.len() != b.len() {
+        return Err(());
+    }
+    
+    let mut result = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        result |= x ^ y;
+    }
+    
+    // Use volatile read to prevent compiler from optimizing
+    let result = std::hint::black_box(result);
+    
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
 
 /// There are two places where WireGuard requires "randomness" for cookies
 /// * The 24 byte nonce in the cookie massage - here the only goal is to avoid nonce reuse
@@ -166,7 +188,7 @@ impl RateLimiter {
             let (mac1, mac2) = macs.split_at(16);
 
             let computed_mac1 = b2s_keyed_mac_16(&self.mac1_key, msg);
-            verify_slices_are_equal(&computed_mac1[..16], mac1)
+            constant_time_compare(&computed_mac1[..16], mac1)
                 .map_err(|_| TunnResult::Err(WireGuardError::InvalidMac))?;
 
             if self.is_under_load() {
@@ -179,7 +201,7 @@ impl RateLimiter {
                 let cookie = self.current_cookie(addr);
                 let computed_mac2 = b2s_keyed_mac_16_2(&cookie, msg, mac1);
 
-                if verify_slices_are_equal(&computed_mac2[..16], mac2).is_err() {
+                if constant_time_compare(&computed_mac2[..16], mac2).is_err() {
                     let cookie_packet = self
                         .format_cookie_reply(sender_idx, cookie, mac1, dst)
                         .map_err(TunnResult::Err)?;

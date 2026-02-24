@@ -7,6 +7,7 @@
 //!
 //! - **Hybrid PQ Key Exchange**: Combines ML-KEM-768 (NIST FIPS 203) with X25519
 //!   for defense-in-depth against both classical and quantum attacks.
+//! - **PQ Authentication**: ML-DSA-65 (NIST FIPS 204) signatures for pq-only mode.
 //! - **Pluggable Backends**: Abstract `CryptoBackend` trait allows swapping
 //!   between software and hardware (QUAC 100) implementations.
 //! - **CNSA 2.0 Aligned**: Algorithm choices aligned with NSA CNSA 2.0 requirements.
@@ -14,7 +15,7 @@
 //! # Operating Modes
 //!
 //! - `Hybrid` (default): ML-KEM-768 + X25519 key exchange, Ed25519 authentication
-//! - `PqOnly`: Pure ML-KEM-768 key exchange, ML-DSA-65 authentication (Phase 2)
+//! - `PqOnly`: Pure ML-KEM-768 key exchange, ML-DSA-65 authentication
 //! - `Classic`: Standard WireGuard-compatible X25519 + Ed25519
 //!
 //! # Example
@@ -43,7 +44,9 @@ pub use config::{Config, ConfigError, InterfaceConfig, PeerConfig};
 pub use crypto::{select_backend, CryptoBackend, CryptoError, CryptoResult};
 pub use software::SoftwareBackend;
 pub use types::{
-    KeyError, MlKemCiphertext, MlKemPublicKey, MlKemSecretKey, OperatingMode, SharedSecret,
+    KeyError, MlKemCiphertext, MlKemPublicKey, MlKemSecretKey, 
+    MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature,
+    OperatingMode, SharedSecret,
 };
 
 /// Library version

@@ -20,6 +20,22 @@ use std::time::{Duration, SystemTime};
 use mock_instant::Instant;
 
 pub(crate) const LABEL_MAC1: &[u8; 8] = b"mac1----";
+
+/// Constant-time comparison of two slices
+#[inline(never)]
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    
+    let mut result = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        result |= x ^ y;
+    }
+    
+    // Use black_box to prevent compiler from optimizing
+    std::hint::black_box(result) == 0
+}
 pub(crate) const LABEL_COOKIE: &[u8; 8] = b"cookie--";
 const KEY_LEN: usize = 32;
 const TIMESTAMP_LEN: usize = 12;
@@ -521,11 +537,13 @@ impl Handshake {
             &hash,
         )?;
 
-        ring::constant_time::verify_slices_are_equal(
+        // Constant-time comparison
+        if !constant_time_eq(
             self.params.peer_static_public.as_bytes(),
             &peer_static_public_decrypted,
-        )
-        .map_err(|_| WireGuardError::WrongKey)?;
+        ) {
+            return Err(WireGuardError::WrongKey);
+        }
 
         // initiator.hash = HASH(initiator.hash || msg.encrypted_static)
         hash = b2s_hash(&hash, packet.encrypted_static);
