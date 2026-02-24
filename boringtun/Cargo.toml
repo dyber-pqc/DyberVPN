@@ -50,7 +50,7 @@ thiserror = { version = "1", optional = true }
 dybervpn-protocol = { path = "../crates/dybervpn-protocol" }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.25", default-features = false, features = [
+nix = { version = "0.31", default-features = false, features = [
     "time",
     "user",
 ] }
