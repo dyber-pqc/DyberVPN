@@ -10,7 +10,8 @@ use crate::config::TunnelConfig;
 use crate::device::DeviceHandle;
 use crate::error::{TunnelError, TunnelResult};
 
-use boringtun::noise::{Tunn, TunnResult as WgResult, HybridHandshakeState, Packet};
+use boringtun::noise::{Tunn, TunnResult as WgResult, HybridHandshakeState, Packet, MlDsaKeyPair};
+use dybervpn_protocol::MlDsaPublicKey;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
@@ -128,18 +129,61 @@ impl Daemon {
     
     /// Initialize peer tunnels
     fn init_peers(&mut self) -> TunnelResult<()> {
+        // Load our ML-DSA signing keypair if present (for pq-only mode)
+        let our_mldsa_keypair = if let Some(ref key_bytes) = self.config.mldsa_private_key {
+            match MlDsaKeyPair::from_secret_key_bytes(key_bytes) {
+                Ok(kp) => {
+                    tracing::info!("Loaded ML-DSA signing keypair for PQ-only authentication");
+                    Some(kp)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load ML-DSA keypair: {} - PQ-only auth disabled", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        
         for (idx, peer_config) in self.config.peers.iter().enumerate() {
             let peer_public = PublicKey::from(peer_config.public_key);
             
+            // Load peer's ML-DSA public key if present (for pq-only mode verification)
+            let peer_mldsa_public = if let Some(ref key_bytes) = peer_config.mldsa_public_key {
+                match MlDsaPublicKey::from_bytes(key_bytes) {
+                    Ok(pk) => {
+                        tracing::debug!("Loaded peer {} ML-DSA public key for PQ-only verification",
+                            hex::encode(&peer_config.public_key[..4]));
+                        Some(pk)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load peer ML-DSA public key: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            
             // Create hybrid state if using PQ
             let hybrid_state = if self.config.mode.uses_pq_kex() {
-                Some(HybridHandshakeState::new(self.config.mode))
+                let mut hs = HybridHandshakeState::new(self.config.mode);
+                
+                // Set ML-DSA keys on hybrid state for PQ-only mode
+                if let Some(ref kp) = our_mldsa_keypair {
+                    hs.mldsa_keypair = Some(kp.clone());
+                }
+                if let Some(ref pk) = peer_mldsa_public {
+                    hs.peer_mldsa_public_key = Some(pk.clone());
+                }
+                
+                Some(hs)
             } else {
                 None
             };
             
             // Create tunnel
-            let tunn = if let Some(hs) = hybrid_state {
+            let mut tunn = if let Some(hs) = hybrid_state {
                 Tunn::new_hybrid(
                     self.private_key.clone(),
                     peer_public,
@@ -159,6 +203,14 @@ impl Daemon {
                     None,
                 )
             };
+            
+            // Also set ML-DSA keys directly on Tunn (for completeness)
+            if let Some(ref kp) = our_mldsa_keypair {
+                tunn.set_mldsa_keypair(kp.clone());
+            }
+            if let Some(pk) = peer_mldsa_public {
+                tunn.set_peer_mldsa_public_key(pk);
+            }
             
             let peer_state = PeerState {
                 tunn,

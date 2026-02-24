@@ -112,12 +112,39 @@ impl MlDsaKeyPair {
         })
     }
 
-    /// Create from raw bytes
+    /// Create from raw bytes (both public and secret key)
     pub fn from_bytes(public_key: &[u8], secret_key: &[u8]) -> Result<Self, String> {
         let public_key = MlDsaPublicKey::from_bytes(public_key)
             .map_err(|e| format!("Invalid ML-DSA public key: {}", e))?;
         let secret_key = MlDsaSecretKey::from_bytes(secret_key)
             .map_err(|e| format!("Invalid ML-DSA secret key: {}", e))?;
+        Ok(Self { public_key, secret_key })
+    }
+    
+    /// Create from secret key bytes only (derives public key)
+    /// 
+    /// Note: ML-DSA secret keys contain the public key, so we can extract it.
+    /// The ml-dsa crate's SecretKey includes the public key bytes.
+    pub fn from_secret_key_bytes(secret_key_bytes: &[u8]) -> Result<Self, String> {
+        let secret_key = MlDsaSecretKey::from_bytes(secret_key_bytes)
+            .map_err(|e| format!("Invalid ML-DSA secret key: {}", e))?;
+        
+        // ML-DSA-65 secret key format includes the public key
+        // The public key is the last 1952 bytes of the 4032-byte secret key
+        if secret_key_bytes.len() != MLDSA_SECRET_KEY_SIZE {
+            return Err(format!("Invalid secret key size: {} (expected {})", 
+                secret_key_bytes.len(), MLDSA_SECRET_KEY_SIZE));
+        }
+        
+        // Extract public key from the end of the secret key
+        // In ML-DSA, the secret key structure embeds the public key
+        // The ml-dsa crate's SecretKey includes the public key bytes at the end
+        let pk_offset = MLDSA_SECRET_KEY_SIZE - MLDSA_PUBLIC_KEY_SIZE;
+        let pk_bytes = &secret_key_bytes[pk_offset..];
+        
+        let public_key = MlDsaPublicKey::from_bytes(pk_bytes)
+            .map_err(|e| format!("Failed to extract ML-DSA public key from secret key: {}", e))?;
+        
         Ok(Self { public_key, secret_key })
     }
     

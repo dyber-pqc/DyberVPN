@@ -516,12 +516,20 @@ fn convert_config(config: &Config) -> Result<TunnelConfig> {
         None
     };
     
+    // Decode ML-DSA private key if present (for pq-only mode)
+    let mldsa_private_key = if let Some(ref mldsa_key) = config.interface.mldsa_private_key {
+        Some(base64::decode(mldsa_key).context("Invalid mldsa_private_key base64")?)
+    } else {
+        None
+    };
+    
     let listen_port = config.interface.listen_port.unwrap_or(51820);
     
     let mut tunnel_config = TunnelConfig {
         device_name: config.interface.name.clone(),
         private_key,
         pq_private_key,
+        mldsa_private_key,
         listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), listen_port),
         address,
         netmask,
@@ -546,6 +554,13 @@ fn convert_config(config: &Config) -> Result<TunnelConfig> {
         
         let pq_public_key = if let Some(ref pq_key) = peer_config.pq_public_key {
             Some(base64::decode(pq_key).context("Invalid peer pq_public_key base64")?)
+        } else {
+            None
+        };
+        
+        // Decode peer's ML-DSA public key if present (for pq-only mode)
+        let mldsa_public_key = if let Some(ref mldsa_key) = peer_config.mldsa_public_key {
+            Some(base64::decode(mldsa_key).context("Invalid peer mldsa_public_key base64")?)
         } else {
             None
         };
@@ -578,6 +593,7 @@ fn convert_config(config: &Config) -> Result<TunnelConfig> {
         let peer = PeerConfig {
             public_key,
             pq_public_key,
+            mldsa_public_key,
             endpoint,
             allowed_ips,
             persistent_keepalive: if peer_config.persistent_keepalive > 0 {

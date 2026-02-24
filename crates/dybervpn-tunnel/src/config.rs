@@ -16,6 +16,9 @@ pub struct TunnelConfig {
     /// Post-quantum private key (ML-KEM-768)
     pub pq_private_key: Option<Vec<u8>>,
     
+    /// ML-DSA-65 signing private key (for pq-only mode authentication)
+    pub mldsa_private_key: Option<Vec<u8>>,
+    
     /// Listen address and port
     pub listen_addr: SocketAddr,
     
@@ -53,6 +56,7 @@ impl Default for TunnelConfig {
             device_name: "dvpn0".to_string(),
             private_key: [0u8; 32],
             pq_private_key: None,
+            mldsa_private_key: None,
             listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 51820),
             address: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             netmask: 24,
@@ -76,6 +80,9 @@ pub struct PeerConfig {
     /// Peer's post-quantum public key (ML-KEM-768)
     pub pq_public_key: Option<Vec<u8>>,
     
+    /// Peer's ML-DSA-65 verification public key (for pq-only mode)
+    pub mldsa_public_key: Option<Vec<u8>>,
+    
     /// Peer's endpoint (address:port)
     pub endpoint: Option<SocketAddr>,
     
@@ -95,6 +102,7 @@ impl PeerConfig {
         Self {
             public_key,
             pq_public_key: None,
+            mldsa_public_key: None,
             endpoint: None,
             allowed_ips: Vec::new(),
             persistent_keepalive: None,
@@ -123,6 +131,12 @@ impl PeerConfig {
     /// Set PQ public key
     pub fn with_pq_public_key(mut self, key: Vec<u8>) -> Self {
         self.pq_public_key = Some(key);
+        self
+    }
+    
+    /// Set ML-DSA public key (for pq-only mode)
+    pub fn with_mldsa_public_key(mut self, key: Vec<u8>) -> Self {
+        self.mldsa_public_key = Some(key);
         self
     }
 }
@@ -174,6 +188,12 @@ impl TunnelConfig {
         self
     }
     
+    /// Set ML-DSA private key (for pq-only mode)
+    pub fn with_mldsa_private_key(mut self, key: Vec<u8>) -> Self {
+        self.mldsa_private_key = Some(key);
+        self
+    }
+    
     /// Validate the configuration
     pub fn validate(&self) -> Result<(), String> {
         // Check private key is not all zeros
@@ -191,6 +211,11 @@ impl TunnelConfig {
             return Err("PQ private key required for hybrid/pq-only mode".into());
         }
         
+        // Check ML-DSA key if pq-only mode
+        if self.mode.uses_pq_auth() && self.mldsa_private_key.is_none() {
+            return Err("ML-DSA private key required for pq-only mode".into());
+        }
+        
         // Check each peer
         for (i, peer) in self.peers.iter().enumerate() {
             if peer.public_key.iter().all(|&b| b == 0) {
@@ -199,6 +224,10 @@ impl TunnelConfig {
             
             if self.mode.uses_pq_kex() && peer.pq_public_key.is_none() {
                 return Err(format!("Peer {} requires PQ public key for hybrid/pq-only mode", i));
+            }
+            
+            if self.mode.uses_pq_auth() && peer.mldsa_public_key.is_none() {
+                return Err(format!("Peer {} requires ML-DSA public key for pq-only mode", i));
             }
         }
         
