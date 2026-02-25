@@ -5,6 +5,47 @@ All notable changes to DyberVPN will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-02-25
+
+### Added
+
+- **Peer-to-peer forwarding**: Server routes packets directly between connected peers
+  in-process, bypassing TUN device and kernel routing for lower latency
+- **Hot-reload via SIGHUP**: `dybervpn reload <interface>` or `kill -HUP` reloads
+  config, adds/removes peers without dropping existing sessions
+- **`remove-peer` command**: Remove peers by name, public key prefix, or VPN IP
+  with confirmation prompt (`-y` to skip)
+- **`list-peers` command**: Show all configured peers with details; `--json` for
+  machine-readable output
+- **Enrollment API**: HTTP endpoint for automated client provisioning
+  - Server: `[enrollment]` config section with token-based auth
+  - Client: `dybervpn enroll -s server:8443 -t token -n name` generates keys,
+    enrolls with server, receives complete config
+  - `GET /health`, `GET /status`, `POST /enroll` endpoints
+  - Auto-triggers config reload after enrollment
+- **Daemonization**: Proper double-fork with PID file management
+  - PID files in `/var/run/dybervpn/` (fallback `/tmp/`)
+  - Stale PID detection and cleanup
+  - `dybervpn up` without `-f` runs as background daemon
+- **Key rotation/expiry**: Sessions older than 24 hours force re-key automatically
+- **IP forwarding auto-enable**: Server auto-enables `net.ipv4.ip_forward` for
+  peer-to-peer routing
+- **Route management**: Auto-adds `ip route` entries for peer `allowed_ips` through
+  TUN device
+- **Peer statistics**: Track tx/rx bytes, forwarded packets, handshake times per peer;
+  logged on shutdown
+- **Multi-peer handshake routing**: Handshake init packets tried against all peers
+  (O(n) scan) instead of always picking the first peer
+- **`add-peer` command**: One-command peer provisioning — generates client keys,
+  appends to server config, outputs complete client config with auto-assigned IP
+
+### Changed
+
+- TUN file descriptor set to non-blocking (`O_NONBLOCK`) — fixes event loop deadlock
+  that starved UDP socket reads
+- `add-peer` now prints `dybervpn reload` hint instead of suggesting server restart
+- Poll-based event loop processes up to 64 packets per fd per iteration
+
 ## [0.1.1] - 2026-02-24
 
 ### Added

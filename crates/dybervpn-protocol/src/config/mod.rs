@@ -21,6 +21,10 @@ pub struct Config {
     #[serde(default)]
     pub entropy: EntropyConfig,
     
+    /// Enrollment API settings (optional, server only)
+    #[serde(default)]
+    pub enrollment: EnrollmentConfig,
+    
     /// Peer configurations
     #[serde(default)]
     pub peer: Vec<PeerConfig>,
@@ -98,6 +102,30 @@ pub struct EntropyConfig {
 
 fn default_entropy_source() -> String {
     "auto".to_string()
+}
+
+/// Enrollment API configuration (server only)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EnrollmentConfig {
+    /// Enable enrollment API
+    #[serde(default)]
+    pub enabled: bool,
+    
+    /// Listen address for enrollment API (default: 0.0.0.0:8443)
+    #[serde(default = "default_enrollment_listen")]
+    pub listen: String,
+    
+    /// Pre-shared enrollment token (required if enabled)
+    #[serde(default)]
+    pub token: Option<String>,
+    
+    /// Server endpoint (IP:port) for generated client configs
+    #[serde(default)]
+    pub server_endpoint: Option<String>,
+}
+
+fn default_enrollment_listen() -> String {
+    "0.0.0.0:8443".to_string()
 }
 
 /// Peer configuration

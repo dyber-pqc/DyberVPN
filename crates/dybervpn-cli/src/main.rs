@@ -7,7 +7,8 @@ use dybervpn_tunnel::{Daemon, TunnelConfig, PeerConfig};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::fs;
 use std::io::Write;
 
@@ -158,6 +159,61 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         output: PathBuf,
     },
+
+    /// Remove a peer from a server config
+    RemovePeer {
+        /// Server configuration file path
+        #[arg(short, long)]
+        config: PathBuf,
+
+        /// Peer to remove (name, public key prefix, or VPN IP)
+        #[arg(short, long)]
+        peer: String,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// List all peers in a server config
+    ListPeers {
+        /// Configuration file path
+        #[arg(short, long)]
+        config: PathBuf,
+
+        /// Output as JSON
+        #[arg(short, long)]
+        json: bool,
+    },
+
+    /// Send SIGHUP to a running tunnel to reload its config
+    Reload {
+        /// Interface name (e.g., dvpn0)
+        interface: String,
+    },
+
+    /// Enroll this client with a DyberVPN server's enrollment API
+    Enroll {
+        /// Server enrollment URL (e.g., http://server:8443)
+        #[arg(short, long)]
+        server: String,
+
+        /// Enrollment token
+        #[arg(short, long)]
+        token: String,
+
+        /// Client name
+        #[arg(short, long)]
+        name: String,
+
+        /// Operating mode (hybrid, pq-only, classic)
+        #[arg(short, long, default_value = "hybrid")]
+        mode: String,
+
+        /// Output directory for client config
+        #[arg(short, long, default_value = ".")]
+        output: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -189,6 +245,10 @@ fn main() -> Result<()> {
         Commands::Sign { file, key, output } => cmd_sign(&file, &key, output.as_deref()),
         Commands::Verify { file, key, sig } => cmd_verify(&file, &key, sig.as_deref()),
         Commands::AddPeer { config, name, endpoint, output } => cmd_add_peer(&config, &name, &endpoint, &output),
+        Commands::RemovePeer { config, peer, yes } => cmd_remove_peer(&config, &peer, yes),
+        Commands::ListPeers { config, json } => cmd_list_peers(&config, json),
+        Commands::Reload { interface } => cmd_reload(&interface),
+        Commands::Enroll { server, token, name, mode, output } => cmd_enroll(&server, &token, &name, &mode, &output),
     }
 }
 
@@ -436,8 +496,9 @@ fn cmd_add_peer(server_config_path: &Path, client_name: &str, endpoint: &str, ou
     println!("Next steps:");
     println!("  1. Copy {} to the client machine", client_config_path.display());
     println!("  2. On the client: sudo dybervpn up -c {} -f", client_config_path.file_name().unwrap().to_string_lossy());
-    println!("  3. Restart the server to pick up the new peer:");
-    println!("     sudo dybervpn down dvpn0 && sudo dybervpn up -c {} -f", server_config_path.display());
+    println!("  3. Apply changes to a running server (no restart needed):");
+    println!("     dybervpn reload dvpn0");
+    println!("     — or restart: sudo dybervpn down dvpn0 && sudo dybervpn up -c {} -f", server_config_path.display());
     
     Ok(())
 }
@@ -704,8 +765,12 @@ fn cmd_up(config_path: &PathBuf, foreground: bool) -> Result<()> {
     let mut daemon = Daemon::new(tunnel_config)
         .context("Failed to create daemon")?;
     
+    // Set config path for hot-reload via SIGHUP
+    daemon.set_config_path(config_path.to_path_buf());
+    
     // Get shutdown flag for signal handling
     let shutdown_flag = daemon.shutdown_flag();
+    let reload_flag = daemon.reload_flag();
     
     // Set up Ctrl+C handler (and SIGTERM in daemon mode)
     let shutdown_flag_clone = shutdown_flag.clone();
@@ -714,6 +779,17 @@ fn cmd_up(config_path: &PathBuf, foreground: bool) -> Result<()> {
         shutdown_flag_clone.store(true, Ordering::Relaxed);
     }).context("Failed to set signal handler")?;
     
+    // Set up SIGHUP handler for config reload
+    #[cfg(unix)]
+    {
+        let reload_flag_clone = reload_flag.clone();
+        unsafe {
+            libc::signal(libc::SIGHUP, sighup_handler as libc::sighandler_t);
+        }
+        // Store the reload flag in a static so the signal handler can access it
+        RELOAD_FLAG.store(Box::into_raw(Box::new(reload_flag_clone)) as usize, Ordering::SeqCst);
+    }
+    
     // Initialize the daemon
     match daemon.init() {
         Ok(_) => {}
@@ -721,6 +797,47 @@ fn cmd_up(config_path: &PathBuf, foreground: bool) -> Result<()> {
             remove_pid_file(&pid_path_clone);
             return Err(e).context("Failed to initialize daemon");
         }
+    }
+    
+    // Start enrollment API if enabled
+    if config.enrollment.enabled {
+        let enrollment_token = config.enrollment.token.clone()
+            .unwrap_or_else(|| {
+                tracing::warn!("Enrollment API enabled but no token set — generating random token");
+                let mut buf = [0u8; 32];
+                use std::io::Read;
+                if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+                    let _ = f.read_exact(&mut buf);
+                }
+                hex::encode(&buf[..16])
+            });
+        
+        let enrollment_listen: SocketAddr = config.enrollment.listen
+            .parse()
+            .unwrap_or_else(|_| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8443));
+        
+        let server_endpoint = config.enrollment.server_endpoint.clone()
+            .unwrap_or_else(|| format!("0.0.0.0:{}", config.interface.listen_port.unwrap_or(51820)));
+        
+        let enrollment_config = dybervpn_tunnel::enrollment::EnrollmentConfig {
+            listen_addr: enrollment_listen,
+            token: enrollment_token.clone(),
+            server_config_path: config_path.to_path_buf(),
+            server_endpoint,
+            reload_flag: reload_flag.clone(),
+        };
+        
+        let enrollment_shutdown = shutdown_flag.clone();
+        std::thread::spawn(move || {
+            let mut server = dybervpn_tunnel::enrollment::EnrollmentServer::new(
+                enrollment_config,
+                enrollment_shutdown,
+            );
+            server.run();
+        });
+        
+        tracing::info!("Enrollment API started on {}", enrollment_listen);
+        tracing::info!("Enrollment token: {}", enrollment_token);
     }
     
     // Run the event loop
@@ -1270,6 +1387,457 @@ fn cmd_version() -> Result<()> {
     println!("  CNSA 2.0 Aligned");
     println!();
     println!("License: Apache-2.0 (new code), BSD-3-Clause (BoringTun-derived)");
+
+    Ok(())
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SIGHUP Hot-Reload Support
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Global atomic to pass the reload flag to the signal handler
+static RELOAD_FLAG: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// SIGHUP signal handler — sets the reload flag
+#[cfg(unix)]
+extern "C" fn sighup_handler(_sig: libc::c_int) {
+    let ptr = RELOAD_FLAG.load(Ordering::SeqCst);
+    if ptr != 0 {
+        let flag = unsafe { &*(ptr as *const Arc<AtomicBool>) };
+        flag.store(true, Ordering::Relaxed);
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Peer Management Commands
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Remove a peer from server config
+fn cmd_remove_peer(config_path: &Path, peer_identifier: &str, skip_confirm: bool) -> Result<()> {
+    let config_str = fs::read_to_string(config_path)
+        .with_context(|| format!("Failed to read config: {}", config_path.display()))?;
+    
+    // Find the peer to remove by matching:
+    // 1. Comment name (# Peer: <name>)
+    // 2. Public key prefix
+    // 3. VPN IP in allowed_ips
+    let lines: Vec<&str> = config_str.lines().collect();
+    
+    // Find [[peer]] block boundaries
+    let mut peer_blocks: Vec<(usize, usize, String, String, String)> = Vec::new(); // (start, end, name, pub_key, allowed_ips)
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() == "[[peer]]" {
+            let block_start = {
+                // Include preceding comment lines (# Peer: ...)
+                let mut s = i;
+                while s > 0 && lines[s - 1].trim().starts_with('#') {
+                    s -= 1;
+                }
+                // Also include blank line before comment
+                if s > 0 && lines[s - 1].trim().is_empty() {
+                    s -= 1;
+                }
+                s
+            };
+            
+            // Find end of block (next [[peer]] or EOF)
+            let mut block_end = i + 1;
+            while block_end < lines.len() {
+                if lines[block_end].trim() == "[[peer]]" {
+                    break;
+                }
+                // Also check for preceding comment of next block
+                if block_end + 1 < lines.len() && lines[block_end + 1].trim() == "[[peer]]" {
+                    if lines[block_end].trim().starts_with('#') {
+                        break;
+                    }
+                }
+                block_end += 1;
+            }
+            
+            // Extract fields from this block
+            let mut name = String::new();
+            let mut pub_key = String::new();
+            let mut allowed_ips = String::new();
+            
+            for j in block_start..block_end {
+                let line = lines[j].trim();
+                if line.starts_with("# Peer:") {
+                    name = line.trim_start_matches("# Peer:").trim()
+                        .split('(').next().unwrap_or("").trim().to_string();
+                }
+                if line.starts_with("public_key") {
+                    pub_key = line.split('"').nth(1).unwrap_or("").to_string();
+                }
+                if line.starts_with("allowed_ips") {
+                    allowed_ips = line.split('"').nth(1).unwrap_or("").to_string();
+                }
+            }
+            
+            peer_blocks.push((block_start, block_end, name, pub_key, allowed_ips));
+            i = block_end;
+        } else {
+            i += 1;
+        }
+    }
+    
+    if peer_blocks.is_empty() {
+        println!("No peers found in config.");
+        return Ok(());
+    }
+    
+    // Find matching peer
+    let identifier_lower = peer_identifier.to_lowercase();
+    let matched: Vec<_> = peer_blocks.iter().enumerate().filter(|(_, (_, _, name, pub_key, allowed_ips))| {
+        name.to_lowercase().contains(&identifier_lower)
+        || pub_key.to_lowercase().starts_with(&identifier_lower)
+        || allowed_ips.contains(peer_identifier)
+    }).collect();
+    
+    if matched.is_empty() {
+        anyhow::bail!(
+            "No peer found matching '{}'. Use 'dybervpn list-peers -c {}' to see all peers.",
+            peer_identifier,
+            config_path.display()
+        );
+    }
+    
+    if matched.len() > 1 {
+        println!("Multiple peers match '{}':", peer_identifier);
+        for (_, (_, _, name, pub_key, allowed_ips)) in &matched {
+            let display_name = if name.is_empty() { "unnamed" } else { name };
+            println!("  - {} (key: {}..., ips: {})", display_name, &pub_key[..16.min(pub_key.len())], allowed_ips);
+        }
+        anyhow::bail!("Be more specific to match a single peer.");
+    }
+    
+    let (_, (start, end, name, pub_key, allowed_ips)) = matched[0];
+    let display_name = if name.is_empty() { "unnamed" } else { name };
+    
+    // Confirm removal
+    if !skip_confirm {
+        println!("Removing peer:");
+        println!("  Name:        {}", display_name);
+        println!("  Public key:  {}...", &pub_key[..16.min(pub_key.len())]);
+        println!("  Allowed IPs: {}", allowed_ips);
+        println!();
+        print!("Confirm removal? [y/N] ");
+        std::io::stdout().flush()?;
+        
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+    
+    // Remove the peer block from the config
+    let mut new_lines: Vec<&str> = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx >= *start && idx < *end {
+            continue;
+        }
+        new_lines.push(line);
+    }
+    
+    // Remove trailing blank lines from the result
+    while new_lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+        new_lines.pop();
+    }
+    
+    let new_config = new_lines.join("\n") + "\n";
+    
+    fs::write(config_path, &new_config)
+        .with_context(|| format!("Failed to write config: {}", config_path.display()))?;
+    
+    let remaining = peer_blocks.len() - 1;
+    
+    println!("\x1b[1;32m✓ Peer '{}' removed\x1b[0m", display_name);
+    println!();
+    println!("  Config: {} (updated)", config_path.display());
+    println!("  Remaining peers: {}", remaining);
+    println!();
+    println!("To apply changes to a running tunnel:");
+    println!("  sudo kill -HUP $(cat /var/run/dybervpn/dvpn0.pid)");
+    println!("  — or —");
+    println!("  dybervpn reload dvpn0");
+    
+    Ok(())
+}
+
+/// List all peers in a config
+fn cmd_list_peers(config_path: &Path, json: bool) -> Result<()> {
+    let config_str = fs::read_to_string(config_path)
+        .with_context(|| format!("Failed to read config: {}", config_path.display()))?;
+    
+    let config: Config = toml::from_str(&config_str)
+        .context("Failed to parse config file")?;
+    
+    if json {
+        #[derive(serde::Serialize)]
+        struct PeerInfo {
+            index: usize,
+            public_key: String,
+            pq_public_key: Option<String>,
+            allowed_ips: String,
+            endpoint: Option<String>,
+            keepalive: u16,
+        }
+        
+        let peers: Vec<PeerInfo> = config.peer.iter().enumerate().map(|(i, p)| {
+            PeerInfo {
+                index: i,
+                public_key: p.public_key.clone(),
+                pq_public_key: p.pq_public_key.as_ref().map(|k| format!("{}...", &k[..20.min(k.len())])),
+                allowed_ips: p.allowed_ips.clone(),
+                endpoint: p.endpoint.clone(),
+                keepalive: p.persistent_keepalive,
+            }
+        }).collect();
+        
+        println!("{}", serde_json::to_string_pretty(&peers)?);
+        return Ok(());
+    }
+    
+    println!("Peers in {} (mode: {:?}):", config_path.display(), config.interface.mode);
+    println!();
+    
+    if config.peer.is_empty() {
+        println!("  (no peers configured)");
+        return Ok(());
+    }
+    
+    // Also scan for comment names
+    let lines: Vec<&str> = config_str.lines().collect();
+    let mut peer_names: Vec<String> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim() == "[[peer]]" {
+            // Look back for # Peer: comment
+            let mut name = String::new();
+            if i > 0 {
+                for j in (0..i).rev() {
+                    let l = lines[j].trim();
+                    if l.starts_with("# Peer:") {
+                        name = l.trim_start_matches("# Peer:").trim()
+                            .split('(').next().unwrap_or("").trim().to_string();
+                        break;
+                    }
+                    if !l.starts_with('#') && !l.is_empty() {
+                        break;
+                    }
+                }
+            }
+            peer_names.push(name);
+        }
+    }
+    
+    for (i, peer) in config.peer.iter().enumerate() {
+        let name = peer_names.get(i).and_then(|n| if n.is_empty() { None } else { Some(n.as_str()) });
+        let display_name = name.unwrap_or("unnamed");
+        
+        println!("  [{}] {}", i + 1, display_name);
+        println!("      Public key:  {}...", &peer.public_key[..20.min(peer.public_key.len())]);
+        if let Some(ref pq) = peer.pq_public_key {
+            println!("      PQ key:      {}... ({} chars)", &pq[..20.min(pq.len())], pq.len());
+        }
+        println!("      Allowed IPs: {}", peer.allowed_ips);
+        if let Some(ref ep) = peer.endpoint {
+            println!("      Endpoint:    {}", ep);
+        }
+        if peer.persistent_keepalive > 0 {
+            println!("      Keepalive:   {} sec", peer.persistent_keepalive);
+        }
+        println!();
+    }
+    
+    println!("Total: {} peers", config.peer.len());
+    
+    Ok(())
+}
+
+/// Send SIGHUP to a running tunnel to reload config
+fn cmd_reload(interface: &str) -> Result<()> {
+    let pid_path = get_pid_path(interface);
+    
+    // Also check fallback locations
+    let pid_file = if pid_path.exists() {
+        pid_path
+    } else {
+        let primary = PathBuf::from(format!("{}/{}.pid", PID_DIR_PRIMARY, interface));
+        let fallback = PathBuf::from(format!("{}/dybervpn-{}.pid", PID_DIR_FALLBACK, interface));
+        if primary.exists() {
+            primary
+        } else if fallback.exists() {
+            fallback
+        } else {
+            anyhow::bail!(
+                "No PID file found for '{}'. Is the tunnel running?",
+                interface
+            );
+        }
+    };
+    
+    let pid_str = fs::read_to_string(&pid_file)
+        .context("Failed to read PID file")?;
+    let pid: i32 = pid_str.trim().parse()
+        .context("Invalid PID in file")?;
+    
+    #[cfg(unix)]
+    {
+        // Check process exists
+        if !is_process_running(pid) {
+            anyhow::bail!("Process {} is not running. The tunnel may have stopped.", pid);
+        }
+        
+        // Send SIGHUP
+        let result = unsafe { libc::kill(pid, libc::SIGHUP) };
+        if result != 0 {
+            let err = std::io::Error::last_os_error();
+            anyhow::bail!("Failed to send SIGHUP to process {}: {}", pid, err);
+        }
+        
+        println!("\x1b[1;32m✓ Sent reload signal to '{}' (PID {})\x1b[0m", interface, pid);
+        println!();
+        println!("The tunnel will re-read its config file and add/remove peers.");
+        println!("Active sessions for unchanged peers are preserved.");
+    }
+    
+    #[cfg(not(unix))]
+    {
+        anyhow::bail!("Config reload via signal is only supported on Unix.");
+    }
+    
+    Ok(())
+}
+
+/// Enroll with a DyberVPN server's enrollment API
+fn cmd_enroll(server_url: &str, token: &str, name: &str, mode: &str, output: &Path) -> Result<()> {
+    let mode: OperatingMode = mode.parse().context("Invalid mode")?;
+    let backend = select_backend();
+
+    // Generate client keys
+    eprintln!("Generating client keys...");
+    let (x25519_pub, x25519_priv) = backend.x25519_keygen()
+        .context("X25519 keygen failed")?;
+
+    let mut pq_pub_b64: Option<String> = None;
+    let mut pq_priv_b64: Option<String> = None;
+
+    if mode.uses_pq_kex() {
+        let (pk, sk) = backend.mlkem_keygen().context("ML-KEM keygen failed")?;
+        pq_pub_b64 = Some(base64::encode(pk.as_bytes()));
+        pq_priv_b64 = Some(base64::encode(sk.as_bytes()));
+    }
+
+    let mut mldsa_pub_b64: Option<String> = None;
+    let mut _mldsa_priv_b64: Option<String> = None;
+
+    if mode.uses_pq_auth() {
+        let (pk, sk) = backend.mldsa_keygen().context("ML-DSA keygen failed")?;
+        mldsa_pub_b64 = Some(base64::encode(pk.as_bytes()));
+        _mldsa_priv_b64 = Some(base64::encode(sk.as_bytes()));
+    }
+
+    // Build enrollment request JSON
+    let mut request_body = format!(
+        r#"{{"name":"{}","public_key":"{}""#,
+        name,
+        base64::encode(&x25519_pub)
+    );
+    if let Some(ref pq_pk) = pq_pub_b64 {
+        request_body.push_str(&format!(r#","pq_public_key":"{}""#, pq_pk));
+    }
+    if let Some(ref mldsa_pk) = mldsa_pub_b64 {
+        request_body.push_str(&format!(r#","mldsa_public_key":"{}""#, mldsa_pk));
+    }
+    request_body.push('}');
+
+    // Parse server URL
+    let url = server_url.trim_end_matches('/');
+    let url = if url.starts_with("http://") || url.starts_with("https://") {
+        url.to_string()
+    } else {
+        format!("http://{}", url)
+    };
+
+    // Extract host:port
+    let host_port = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .to_string();
+
+    eprintln!("Enrolling '{}' with server {}...", name, host_port);
+
+    // Connect and send HTTP request
+    use std::io::{Read, Write as IoWrite};
+    use std::net::TcpStream;
+
+    let mut stream = TcpStream::connect(&host_port)
+        .with_context(|| format!("Failed to connect to enrollment server at {}", host_port))?;
+
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
+
+    let http_request = format!(
+        "POST /enroll HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        host_port, token, request_body.len(), request_body
+    );
+
+    stream.write_all(http_request.as_bytes())
+        .context("Failed to send enrollment request")?;
+    stream.flush().context("flush")?;
+
+    // Read response
+    let mut response = String::new();
+    stream.read_to_string(&mut response)
+        .context("Failed to read enrollment response")?;
+
+    // Parse HTTP response (find the JSON body after headers)
+    let body = response.split("\r\n\r\n").nth(1)
+        .or_else(|| response.split("\n\n").nth(1))
+        .unwrap_or(&response);
+
+    let enroll_response: serde_json::Value = serde_json::from_str(body)
+        .with_context(|| format!("Invalid enrollment response: {}", body))?;
+
+    if !enroll_response["success"].as_bool().unwrap_or(false) {
+        let err = enroll_response["error"].as_str().unwrap_or("unknown error");
+        anyhow::bail!("Enrollment failed: {}", err);
+    }
+
+    let assigned_ip = enroll_response["assigned_ip"].as_str().unwrap_or("?");
+    let client_config_template = enroll_response["client_config"].as_str()
+        .context("Missing client_config in response")?;
+
+    // Insert our private keys into the config
+    let final_config = client_config_template
+        .replace(
+            "# IMPORTANT: Add your private keys below\n# private_key = \"YOUR_X25519_PRIVATE_KEY\"",
+            &format!("private_key = \"{}\"", base64::encode(&x25519_priv)),
+        )
+        .replace(
+            "# pq_private_key = \"YOUR_MLKEM_PRIVATE_KEY\"",
+            &match pq_priv_b64 {
+                Some(ref k) => format!("pq_private_key = \"{}\"", k),
+                None => String::new(),
+            },
+        );
+
+    // Write config
+    let config_path = output.join(format!("{}.toml", name));
+    fs::write(&config_path, &final_config)
+        .with_context(|| format!("Failed to write config: {}", config_path.display()))?;
+
+    println!("\x1b[1;32m\u{2713} Enrolled successfully!\x1b[0m");
+    println!();
+    println!("  Name:        {}", name);
+    println!("  Assigned IP: {}", assigned_ip);
+    println!("  Config:      {}", config_path.display());
+    println!("  Mode:        {:?}", mode);
+    println!();
+    println!("Next steps:");
+    println!("  sudo dybervpn up -c {} -f", config_path.display());
 
     Ok(())
 }

@@ -8,6 +8,7 @@ use crate::error::TunnelResult;
 use crate::error::TunnelError;
 use std::net::IpAddr;
 
+
 /// TUN device trait for cross-platform operations
 pub trait TunDevice: Send + Sync {
     /// Get the device name
@@ -176,6 +177,19 @@ impl DeviceHandle {
                 "TUN devices not supported on this platform".into()
             ))
         }
+    }
+    
+    /// Get the raw file descriptor (for poll/epoll)
+    #[cfg(unix)]
+    pub fn raw_fd(&self) -> i32 {
+        #[cfg(target_os = "linux")]
+        { self.inner.raw_fd() }
+        
+        #[cfg(target_os = "macos")]
+        { self.inner.raw_fd() }
+        
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        { -1 }
     }
     
     /// Bring device down
