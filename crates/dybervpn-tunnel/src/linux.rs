@@ -79,6 +79,20 @@ impl LinuxTun {
             String::from_utf8_lossy(slice).to_string()
         };
         
+        // Set non-blocking so the event loop doesn't stall
+        let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0 {
+            return Err(TunnelError::DeviceCreation(
+                "Failed to get TUN fd flags".into(),
+            ));
+        }
+        let ret = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        if ret < 0 {
+            return Err(TunnelError::DeviceCreation(
+                "Failed to set TUN fd non-blocking".into(),
+            ));
+        }
+        
         tracing::info!("Created TUN device: {}", actual_name);
         
         Ok(Self {
