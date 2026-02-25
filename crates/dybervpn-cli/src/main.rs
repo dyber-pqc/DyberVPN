@@ -139,6 +139,25 @@ enum Commands {
         #[arg(short, long)]
         sig: Option<PathBuf>,
     },
+
+    /// Add a new peer to a server config and generate client config
+    AddPeer {
+        /// Server configuration file path
+        #[arg(short, long)]
+        config: PathBuf,
+
+        /// Client name (used for output filename)
+        #[arg(short, long)]
+        name: String,
+
+        /// Server endpoint (IP:port) for client config
+        #[arg(short, long)]
+        endpoint: String,
+
+        /// Output directory for client config
+        #[arg(short, long, default_value = ".")]
+        output: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -169,6 +188,7 @@ fn main() -> Result<()> {
         Commands::SignKeygen { output, name } => cmd_sign_keygen(&output, &name),
         Commands::Sign { file, key, output } => cmd_sign(&file, &key, output.as_deref()),
         Commands::Verify { file, key, sig } => cmd_verify(&file, &key, sig.as_deref()),
+        Commands::AddPeer { config, name, endpoint, output } => cmd_add_peer(&config, &name, &endpoint, &output),
     }
 }
 
@@ -240,6 +260,185 @@ fn cmd_genkey(mode: &str, format: &str) -> Result<()> {
     eprintln!("Keys generated successfully.");
     eprintln!("Save the private keys securely and share only the public keys.");
 
+    Ok(())
+}
+
+/// Add a new peer to server config and generate client config
+fn cmd_add_peer(server_config_path: &Path, client_name: &str, endpoint: &str, output_dir: &Path) -> Result<()> {
+    let backend = select_backend();
+    
+    // Read and parse server config
+    let server_config_str = fs::read_to_string(server_config_path)
+        .with_context(|| format!("Failed to read server config: {}", server_config_path.display()))?;
+    
+    let server_config: Config = toml::from_str(&server_config_str)
+        .context("Failed to parse server config")?;
+    
+    // Extract server's public keys from private keys
+    let server_priv_bytes = base64::decode(&server_config.interface.private_key)
+        .context("Invalid server private_key base64")?;
+    let mut server_priv_arr = [0u8; 32];
+    server_priv_arr.copy_from_slice(&server_priv_bytes);
+    let server_secret = x25519_dalek::StaticSecret::from(server_priv_arr);
+    let server_public = x25519_dalek::PublicKey::from(&server_secret);
+    let server_public_b64 = base64::encode(server_public.as_bytes());
+    
+    let server_pq_public_b64 = if let Some(ref pq_priv) = server_config.interface.pq_private_key {
+        // For ML-KEM, we need the public key from the private key
+        // The PQ public key isn't derivable from private key alone in ML-KEM
+        // So we need to look for it in comments or ask the user
+        // Workaround: extract from the private key bytes (ML-KEM-768 sk contains pk)
+        let pq_priv_bytes = base64::decode(pq_priv)
+            .context("Invalid server pq_private_key base64")?;
+        // ML-KEM-768 secret key is 2400 bytes; last 1184 bytes are the public key
+        if pq_priv_bytes.len() >= 2400 {
+            let pk_bytes = &pq_priv_bytes[pq_priv_bytes.len() - 1184..];
+            base64::encode(pk_bytes)
+        } else {
+            anyhow::bail!("Cannot derive PQ public key from server config. \
+                Please provide server's pq_public_key manually.");
+        }
+    } else {
+        String::new()
+    };
+    
+    // Determine next available IP
+    let (server_ip, prefix) = parse_cidr(&server_config.interface.address)?;
+    let existing_ips: Vec<u8> = server_config.peer.iter()
+        .filter_map(|p| {
+            parse_cidr(&p.allowed_ips).ok()
+                .and_then(|(ip, _)| match ip {
+                    IpAddr::V4(v4) => Some(v4.octets()[3]),
+                    _ => None,
+                })
+        })
+        .collect();
+    
+    let server_last_octet = match server_ip {
+        IpAddr::V4(v4) => v4.octets()[3],
+        _ => anyhow::bail!("Only IPv4 supported for auto-IP assignment"),
+    };
+    
+    let base_octets = match server_ip {
+        IpAddr::V4(v4) => v4.octets(),
+        _ => anyhow::bail!("Only IPv4 supported"),
+    };
+    
+    // Find next free IP (start from server+1, skip existing)
+    let mut next_octet = server_last_octet + 1;
+    while existing_ips.contains(&next_octet) || next_octet == 0 || next_octet == 255 {
+        next_octet += 1;
+        if next_octet >= 255 {
+            anyhow::bail!("No free IP addresses in subnet");
+        }
+    }
+    
+    let client_ip = format!("{}.{}.{}.{}", base_octets[0], base_octets[1], base_octets[2], next_octet);
+    let client_cidr = format!("{}/{}", client_ip, prefix);
+    let subnet = format!("{}.{}.{}.0/{}", base_octets[0], base_octets[1], base_octets[2], prefix);
+    
+    // Generate client keys
+    let (client_x25519_pub, client_x25519_priv) = backend.x25519_keygen()
+        .context("Failed to generate X25519 key")?;
+    let (_client_ed25519_pub, _client_ed25519_priv) = backend.ed25519_keygen()
+        .context("Failed to generate Ed25519 key")?;
+    
+    let mut client_pq_pub_b64 = String::new();
+    let mut client_pq_priv_b64 = String::new();
+    
+    if server_config.interface.mode.uses_pq_kex() {
+        let (mlkem_pub, mlkem_priv) = backend.mlkem_keygen()
+            .context("Failed to generate ML-KEM key")?;
+        client_pq_pub_b64 = base64::encode(mlkem_pub.as_bytes());
+        client_pq_priv_b64 = base64::encode(mlkem_priv.as_bytes());
+    }
+    
+    // Build the [[peer]] block to append to server config
+    let mut peer_block = format!(
+        "\n# Peer: {} (added {})\n[[peer]]\npublic_key = \"{}\"\n",
+        client_name,
+        chrono::Utc::now().format("%Y-%m-%d %H:%M"),
+        base64::encode(&client_x25519_pub),
+    );
+    
+    if !client_pq_pub_b64.is_empty() {
+        peer_block.push_str(&format!("pq_public_key = \"{}\"\n", client_pq_pub_b64));
+    }
+    
+    peer_block.push_str(&format!("allowed_ips = \"{}/32\"\n", client_ip));
+    peer_block.push_str("persistent_keepalive = 25\n");
+    
+    // Append to server config
+    let mut server_file = fs::OpenOptions::new()
+        .append(true)
+        .open(server_config_path)
+        .with_context(|| format!("Failed to open server config for writing: {}", server_config_path.display()))?;
+    
+    server_file.write_all(peer_block.as_bytes())
+        .context("Failed to append peer to server config")?;
+    
+    // Build client config
+    let mode_str = format!("{:?}", server_config.interface.mode).to_lowercase();
+    let mut client_config = format!(
+        "# DyberVPN Client Configuration — {}\n\
+         # Generated: {}\n\
+         # Server: {}\n\n\
+         [interface]\n\
+         name = \"dvpn0\"\n\
+         address = \"{}\"\n\
+         mode = \"{}\"\n\
+         private_key = \"{}\"\n",
+        client_name,
+        chrono::Utc::now().to_rfc3339(),
+        endpoint,
+        client_cidr,
+        mode_str,
+        base64::encode(&client_x25519_priv),
+    );
+    
+    if !client_pq_priv_b64.is_empty() {
+        client_config.push_str(&format!("pq_private_key = \"{}\"\n", client_pq_priv_b64));
+    }
+    
+    client_config.push_str(&format!(
+        "\n[[peer]]\n\
+         public_key = \"{}\"\n",
+        server_public_b64,
+    ));
+    
+    if !server_pq_public_b64.is_empty() {
+        client_config.push_str(&format!("pq_public_key = \"{}\"\n", server_pq_public_b64));
+    }
+    
+    client_config.push_str(&format!(
+        "allowed_ips = \"{}\"\n\
+         endpoint = \"{}\"\n\
+         persistent_keepalive = 25\n",
+        subnet,
+        endpoint,
+    ));
+    
+    // Write client config
+    let client_config_path = output_dir.join(format!("{}.toml", client_name));
+    fs::write(&client_config_path, &client_config)
+        .with_context(|| format!("Failed to write client config: {}", client_config_path.display()))?;
+    
+    // Summary
+    println!("\x1b[1;32m✓ Peer '{}' added successfully\x1b[0m", client_name);
+    println!();
+    println!("  Client IP:     {}", client_ip);
+    println!("  Client config: {}", client_config_path.display());
+    println!("  Server config: {} (updated)", server_config_path.display());
+    println!("  Mode:          {}", mode_str);
+    println!();
+    println!("  Peers in server config: {}", server_config.peer.len() + 1);
+    println!();
+    println!("Next steps:");
+    println!("  1. Copy {} to the client machine", client_config_path.display());
+    println!("  2. On the client: sudo dybervpn up -c {} -f", client_config_path.file_name().unwrap().to_string_lossy());
+    println!("  3. Restart the server to pick up the new peer:");
+    println!("     sudo dybervpn down dvpn0 && sudo dybervpn up -c {} -f", server_config_path.display());
+    
     Ok(())
 }
 

@@ -384,17 +384,16 @@ impl Daemon {
         // Find which peer this packet is for
         let peer_key = if let Ok(ref p) = parsed {
             match p {
-                Packet::HandshakeInit(_) => {
-                    self.peers.keys().next().copied()
+                Packet::HandshakeInit(_) | Packet::HandshakeInitPq(_) => {
+                    // For handshake initiations, we don't know which peer sent it yet.
+                    // Try each peer — the one that successfully decapsulates is the right one.
+                    self.find_peer_for_handshake_init(packet, src, out_buf)
                 }
                 Packet::HandshakeResponse(h) => {
                     self.index_map.get(&(h.receiver_idx >> 8)).copied()
                 }
                 Packet::PacketData(d) => {
                     self.index_map.get(&(d.receiver_idx >> 8)).copied()
-                }
-                Packet::HandshakeInitPq(_) => {
-                    self.peers.keys().next().copied()
                 }
                 Packet::HandshakeResponsePq(h) => {
                     self.index_map.get(&(h.receiver_idx >> 8)).copied()
@@ -431,6 +430,54 @@ impl Daemon {
         } else {
             tracing::trace!("Unknown packet from {}", src);
         }
+    }
+    
+    /// Try each peer to find which one a HandshakeInit belongs to.
+    /// Returns the peer key if found, updating endpoint as a side effect.
+    /// For handshake init, we can't know the sender until we try decapsulating
+    /// with each peer's Tunn context (which checks the static key inside).
+    fn find_peer_for_handshake_init(
+        &mut self,
+        packet: &[u8],
+        src: SocketAddr,
+        out_buf: &mut [u8],
+    ) -> Option<[u8; 32]> {
+        // Collect keys to iterate without holding &mut self
+        let peer_keys: Vec<[u8; 32]> = self.peers.keys().copied().collect();
+        
+        for key in peer_keys {
+            if let Some(peer) = self.peers.get_mut(&key) {
+                let result = peer.tunn.decapsulate(Some(src.ip()), packet, out_buf);
+                match result {
+                    WgResult::Err(_) => {
+                        // Wrong peer — try next one
+                        continue;
+                    }
+                    _ => {
+                        // This peer accepted the handshake
+                        tracing::debug!(
+                            "Handshake init matched peer {}",
+                            hex::encode(&key[..4])
+                        );
+                        peer.endpoint = Some(src);
+                        peer.last_activity = Instant::now();
+                        
+                        // Handle the result (send response, etc.)
+                        self.handle_wg_result_simple(result, src);
+                        
+                        // Process queued packets
+                        self.process_queued_packets(&key, src, out_buf);
+                        
+                        // Return None to signal we already handled it
+                        // (prevents double-processing in the caller)
+                        return None;
+                    }
+                }
+            }
+        }
+        
+        tracing::debug!("No peer matched handshake init from {}", src);
+        None
     }
     
     /// Handle a WireGuard result (simple version without out_buf)
