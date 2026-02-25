@@ -25,6 +25,18 @@ pub struct Config {
     #[serde(default)]
     pub enrollment: EnrollmentConfig,
     
+    /// Security / key lifecycle settings (optional)
+    #[serde(default)]
+    pub security: SecurityConfig,
+    
+    /// Access control policy (optional, server only)
+    #[serde(default)]
+    pub access_control: AccessControlConfig,
+    
+    /// Audit logging (optional)
+    #[serde(default)]
+    pub audit: AuditLogConfig,
+    
     /// Peer configurations
     #[serde(default)]
     pub peer: Vec<PeerConfig>,
@@ -128,9 +140,159 @@ fn default_enrollment_listen() -> String {
     "0.0.0.0:8443".to_string()
 }
 
+/// Security / key lifecycle configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    /// Path to CRL (revoked keys) JSON file
+    #[serde(default)]
+    pub crl_path: Option<String>,
+    
+    /// Maximum static key age in hours (0 = no limit, default: 720 = 30 days)
+    #[serde(default = "default_key_max_age")]
+    pub key_max_age_hours: u64,
+    
+    /// Maximum session age in hours before forced re-handshake (default: 24)
+    #[serde(default = "default_session_max_age")]
+    pub session_max_age_hours: u64,
+    
+    /// How often to check for expired/revoked peers in seconds (default: 300)
+    #[serde(default = "default_check_interval")]
+    pub check_interval_secs: u64,
+    
+    /// Automatically disconnect peers with revoked keys (default: true)
+    #[serde(default = "default_true")]
+    pub auto_disconnect_revoked: bool,
+}
+
+fn default_key_max_age() -> u64 { 720 }
+fn default_session_max_age() -> u64 { 24 }
+fn default_check_interval() -> u64 { 300 }
+fn default_true() -> bool { true }
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            crl_path: None,
+            key_max_age_hours: default_key_max_age(),
+            session_max_age_hours: default_session_max_age(),
+            check_interval_secs: default_check_interval(),
+            auto_disconnect_revoked: default_true(),
+        }
+    }
+}
+
+/// Access control policy configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccessControlConfig {
+    /// Enable access control enforcement
+    #[serde(default)]
+    pub enabled: bool,
+    
+    /// Default action: "deny" (Zero Trust) or "allow"
+    #[serde(default = "default_deny")]
+    pub default_action: String,
+    
+    /// Path to external policy JSON file (hot-reloadable)
+    #[serde(default)]
+    pub policy_path: Option<String>,
+    
+    /// Inline role definitions
+    #[serde(default)]
+    pub role: Vec<AccessRoleConfig>,
+}
+
+fn default_deny() -> String { "deny".to_string() }
+
+/// A role in the access control policy
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessRoleConfig {
+    /// Role name
+    pub name: String,
+    /// Peer names assigned to this role
+    #[serde(default)]
+    pub peers: Vec<String>,
+    /// Peer key fingerprints assigned to this role
+    #[serde(default)]
+    pub peer_keys: Vec<String>,
+    /// Access rules for this role
+    #[serde(default)]
+    pub rule: Vec<AccessRuleConfig>,
+}
+
+/// A single access control rule
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessRuleConfig {
+    /// "allow" or "deny"
+    pub action: String,
+    /// Target network in CIDR notation
+    pub network: String,
+    /// Ports (comma-separated, ranges allowed: "443,8080-8090")
+    #[serde(default)]
+    pub ports: Option<String>,
+    /// Protocol: "tcp", "udp", "icmp", "any"
+    #[serde(default = "default_any")]
+    pub protocol: String,
+    /// Description
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+fn default_any() -> String { "any".to_string() }
+
+/// Audit logging configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLogConfig {
+    /// Enable audit logging
+    #[serde(default)]
+    pub enabled: bool,
+    
+    /// Path to audit log file (NDJSON format)
+    #[serde(default = "default_audit_path")]
+    pub path: String,
+    
+    /// Maximum log file size in MB before rotation (default: 100)
+    #[serde(default = "default_audit_max_mb")]
+    pub max_size_mb: u64,
+    
+    /// Number of rotated files to keep (default: 10)
+    #[serde(default = "default_rotate_count")]
+    pub rotate_count: u32,
+    
+    /// Log per-packet data plane events (high volume, default: false)
+    #[serde(default)]
+    pub log_data_packets: bool,
+    
+    /// Event categories to log (empty = all)
+    /// Options: connection, handshake, policy, key_management, admin, enrollment, system
+    #[serde(default)]
+    pub events: Vec<String>,
+}
+
+fn default_audit_path() -> String { "/var/log/dybervpn/audit.jsonl".to_string() }
+fn default_audit_max_mb() -> u64 { 100 }
+
+fn default_rotate_count() -> u32 { 10 }
+
+impl Default for AuditLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_audit_path(),
+            max_size_mb: default_audit_max_mb(),
+            rotate_count: default_rotate_count(),
+            log_data_packets: false,
+            events: Vec::new(),
+        }
+    }
+}
+
 /// Peer configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConfig {
+    /// Human-readable peer name (for policy matching and audit logs)
+    #[serde(default)]
+    pub name: Option<String>,
+    
     /// Peer's classical public key (base64)
     pub public_key: String,
     

@@ -1,0 +1,115 @@
+# DyberVPN Enterprise Server Configuration
+# Demonstrates: Access Control, Key Revocation, Audit Logging
+#
+# Usage:
+#   sudo dybervpn up -c test-configs/enterprise-server.toml -f
+
+[interface]
+name = "dvpn0"
+private_key = "GENERATE_WITH_dybervpn_genkey"
+pq_private_key = "GENERATE_WITH_dybervpn_genkey"
+listen_port = 51820
+address = "10.200.200.1/24"
+mode = "hybrid"
+dns = "1.1.1.1"
+
+# ── Zero Trust Access Control ──────────────────────────────────────────────
+# Every packet is checked against policy. Default deny = Zero Trust.
+[access_control]
+enabled = true
+default_action = "deny"
+
+# Engineering role: access to dev/staging subnets, web ports only
+[[access_control.role]]
+name = "engineering"
+peers = ["alice-laptop", "bob-workstation"]
+
+[[access_control.role.rule]]
+action = "allow"
+network = "10.100.0.0/16"
+ports = "443,8080-8090,5432,6379"
+protocol = "tcp"
+description = "Dev/staging services (HTTPS, API, Postgres, Redis)"
+
+[[access_control.role.rule]]
+action = "allow"
+network = "10.100.0.0/16"
+protocol = "icmp"
+description = "Allow ping for diagnostics"
+
+[[access_control.role.rule]]
+action = "deny"
+network = "10.100.50.0/24"
+description = "Block production database subnet"
+
+# Admin role: unrestricted access
+[[access_control.role]]
+name = "admin"
+peers = ["carol-admin"]
+
+[[access_control.role.rule]]
+action = "allow"
+network = "0.0.0.0/0"
+description = "Full access"
+
+# Contractor role: limited to specific app only
+[[access_control.role]]
+name = "contractor"
+peers = ["dave-contractor"]
+
+[[access_control.role.rule]]
+action = "allow"
+network = "10.100.10.5/32"
+ports = "443"
+protocol = "tcp"
+description = "JIRA only"
+
+# ── Key Revocation & Lifecycle ─────────────────────────────────────────────
+# CRL is checked on every handshake + every 5 minutes for existing sessions.
+[security]
+crl_path = "/etc/dybervpn/revoked-keys.json"
+key_max_age_hours = 720              # 30 days — force key rotation
+session_max_age_hours = 24           # Re-handshake daily
+check_interval_secs = 300            # Check CRL every 5 minutes
+auto_disconnect_revoked = true       # Immediately boot revoked peers
+
+# ── Audit Logging (SOC 2 / FedRAMP / HIPAA) ───────────────────────────────
+# NDJSON format — one JSON object per line, machine-parseable.
+[audit]
+enabled = true
+path = "/var/log/dybervpn/audit.jsonl"
+max_size_mb = 100
+rotate_count = 10
+log_data_packets = false
+events = ["connection", "handshake", "policy", "key_management", "admin"]
+
+# ── Peers ──────────────────────────────────────────────────────────────────
+
+# Peer: alice-laptop (Engineering)
+# The `name` field links this peer to the "engineering" role above.
+[[peer]]
+name = "alice-laptop"
+public_key = "REPLACE_WITH_PEER_PUBLIC_KEY"
+pq_public_key = "REPLACE_WITH_PEER_PQ_PUBLIC_KEY"
+allowed_ips = "10.200.200.2/32"
+
+# Peer: bob-workstation (Engineering)
+[[peer]]
+name = "bob-workstation"
+public_key = "REPLACE_WITH_PEER_PUBLIC_KEY"
+pq_public_key = "REPLACE_WITH_PEER_PQ_PUBLIC_KEY"
+allowed_ips = "10.200.200.3/32"
+
+# Peer: carol-admin (Admin)
+[[peer]]
+name = "carol-admin"
+public_key = "REPLACE_WITH_PEER_PUBLIC_KEY"
+pq_public_key = "REPLACE_WITH_PEER_PQ_PUBLIC_KEY"
+allowed_ips = "10.200.200.10/32"
+
+# Peer: dave-contractor (Contractor)
+[[peer]]
+name = "dave-contractor"
+public_key = "REPLACE_WITH_PEER_PUBLIC_KEY"
+pq_public_key = "REPLACE_WITH_PEER_PQ_PUBLIC_KEY"
+allowed_ips = "10.200.200.50/32"

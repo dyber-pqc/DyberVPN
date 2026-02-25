@@ -12,7 +12,39 @@ listen_port = 51820
 address = "10.200.200.1/24"
 mode = "hybrid"
 
+# ── Enterprise: Key Revocation (optional) ──────────────────────────────────
+# Uncomment to enable key lifecycle management
+# [security]
+# crl_path = "test-configs/revoked-keys.json"
+# key_max_age_hours = 720
+# session_max_age_hours = 24
+# check_interval_secs = 300
+# auto_disconnect_revoked = true
+
+# ── Enterprise: Access Control (optional) ──────────────────────────────────
+# Uncomment to enable Zero Trust policy enforcement
+# [access_control]
+# enabled = true
+# default_action = "deny"
+# [[access_control.role]]
+# name = "default"
+# peers = ["client"]
+# [[access_control.role.rule]]
+# action = "allow"
+# network = "0.0.0.0/0"
+# description = "Allow all traffic"
+
+# ── Enterprise: Audit Logging (optional) ───────────────────────────────────
+# Uncomment to enable compliance audit logging
+# [audit]
+# enabled = true
+# path = "/var/log/dybervpn/audit.jsonl"
+# max_size_mb = 100
+# rotate_count = 10
+# events = ["connection", "handshake", "policy", "key_management", "admin"]
+
 [[peer]]
+name = "client"           # Used for policy matching in [access_control]
 public_key = "REPLACE_WITH_CLIENT_X25519_PUBLIC_KEY"
 pq_public_key = "REPLACE_WITH_CLIENT_MLKEM768_PUBLIC_KEY"
 allowed_ips = "10.200.200.2/32"

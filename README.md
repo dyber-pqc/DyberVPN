@@ -22,6 +22,12 @@ DyberVPN now supports **full post-quantum authentication** with ML-DSA-65 signat
 - **WireGuard Compatible**: Data plane uses standard WireGuard encapsulation (ChaCha20-Poly1305)
 - **Self-Hosted**: Runs entirely on your infrastructure with zero external dependencies
 - **High Performance**: Built in Rust, forked from Cloudflare's BoringTun
+- **Zero Trust Access Control**: Per-peer, role-based policy enforcement on every packet
+- **Key Revocation & Lifecycle**: CRL management, suspension, reinstatement, auto-expiry
+- **Compliance Audit Logging**: NDJSON structured events for SOC 2, FedRAMP, HIPAA (SIEM-ready)
+- **Multi-Peer Server**: In-process peer-to-peer routing with split tunneling
+- **Hot Reload**: SIGHUP-triggered config reload without dropping connections
+- **Automated Provisioning**: Enrollment API for zero-touch peer onboarding
 
 ## Quick Start
 
@@ -43,7 +49,7 @@ sudo cp target/release/dybervpn /usr/local/bin/
 # Generate hybrid (ML-KEM + X25519) key pair
 dybervpn genkey -m hybrid
 
-# Generate PQ-only (ML-KEM + ML-DSA) key pair  
+# Generate PQ-only (ML-KEM + ML-DSA) key pair
 dybervpn genkey -m pqonly
 ```
 
@@ -129,25 +135,59 @@ dybervpn status            # Show tunnel status
 dybervpn check -c <config> # Validate configuration
 dybervpn version           # Show version and crypto info
 dybervpn benchmark -i 100  # Run crypto benchmarks
+
+# Enterprise: Key Lifecycle
+dybervpn revoke-key -c <config> -p <peer> -r <reason>  # Revoke a peer's key
+dybervpn suspend-key -c <config> -p <peer> -e 24h      # Suspend temporarily
+dybervpn reinstate-key -c <config> -p <peer>           # Reinstate a key
+dybervpn list-revoked -c <config>                      # List revoked keys
+dybervpn list-revoked -c <config> --json               # JSON output
 ```
+
+## Enterprise Features
+
+DyberVPN includes three enterprise security features for regulated environments:
+
+| Feature | Config Section | Purpose |
+|---------|---------------|---------|
+| **Zero Trust Access Control** | `[access_control]` | Per-peer policy enforcement on every packet |
+| **Key Lifecycle Management** | `[security]` | Revocation, suspension, expiry, rotation |
+| **Structured Audit Logging** | `[audit]` | NDJSON events for SOC 2 / FedRAMP / HIPAA |
+
+```toml
+# Enable in server.toml:
+[access_control]
+enabled = true
+default_action = "deny"   # Zero Trust
+
+[security]
+crl_path = "/etc/dybervpn/revoked-keys.json"
+
+[audit]
+enabled = true
+path = "/var/log/dybervpn/audit.jsonl"
+```
+
+See `docs/enterprise-features.md` for full documentation, compliance mapping,
+and example configurations.
 
 ## Performance
 
 Benchmarks on typical hardware (release build):
 
-| Algorithm | Operation | Time |
-|-----------|-----------|------|
-| ML-KEM-768 | keygen | ~88 µs |
-| ML-KEM-768 | encaps | ~77 µs |
-| ML-KEM-768 | decaps | ~91 µs |
-| ML-DSA-65 | keygen | ~291 µs |
-| ML-DSA-65 | sign | ~328 µs |
-| ML-DSA-65 | verify | ~166 µs |
-| X25519 | DH | ~45 µs |
-| Ed25519 | sign | ~29 µs |
-| Ed25519 | verify | ~31 µs |
+| Algorithm  | Operation | Time    |
+|------------|-----------|---------|
+| ML-KEM-768 | keygen    | ~88 µs  |
+| ML-KEM-768 | encaps    | ~77 µs  |
+| ML-KEM-768 | decaps    | ~91 µs  |
+| ML-DSA-65  | keygen    | ~291 µs |
+| ML-DSA-65  | sign      | ~328 µs |
+| ML-DSA-65  | verify    | ~166 µs |
+| X25519     | DH        | ~45 µs  |
+| Ed25519    | sign      | ~29 µs  |
+| Ed25519    | verify    | ~31 µs  |
 
-**Full hybrid handshake: ~250-300 µs**  
+**Full hybrid handshake: ~250-300 µs**
 **Full PQ-only handshake: ~2-3 ms** (includes ML-DSA signatures)
 
 ## Testing
@@ -265,11 +305,46 @@ docker build -t dybervpn:latest -f deploy/Dockerfile .
 docker-compose -f deploy/docker-compose.yml up -d
 ```
 
+## Enterprise Security
+
+DyberVPN includes three enterprise security features for production deployment:
+
+```toml
+# Zero Trust — deny by default, allow by role
+[access_control]
+enabled = true
+default_action = "deny"
+
+# Key lifecycle — CRL, auto-expiry, forced rotation
+[security]
+crl_path = "/etc/dybervpn/revoked-keys.json"
+key_max_age_hours = 720
+
+# Audit — NDJSON events for SIEM ingest
+[audit]
+enabled = true
+path = "/var/log/dybervpn/audit.jsonl"
+events = ["connection", "handshake", "policy", "key_management", "admin"]
+```
+
+Key management CLI:
+```bash
+dybervpn revoke-key -c server.toml -p alice -r employee_departed -b admin@co.com
+dybervpn suspend-key -c server.toml -p bob -e 24h
+dybervpn reinstate-key -c server.toml -p bob
+dybervpn list-revoked -c server.toml --json
+```
+
+Full documentation: [docs/enterprise-security.md](docs/enterprise-security.md)
+
 ## Compliance
 
 - **NIST FIPS 203**: ML-KEM (Module-Lattice-Based Key-Encapsulation Mechanism)
 - **NIST FIPS 204**: ML-DSA (Module-Lattice-Based Digital Signature Algorithm)
 - **CNSA 2.0**: NSA Commercial National Security Algorithm Suite 2.0
+- **SOC 2**: Structured audit logging (CC6.1, CC6.2, CC6.3, CC7.2)
+- **FedRAMP**: Access control + audit trail (AC-2, AC-3, AU-2, AU-3)
+- **HIPAA**: Access controls + audit controls (§164.312)
 
 ## Roadmap
 
@@ -279,9 +354,15 @@ docker-compose -f deploy/docker-compose.yml up -d
 - [x] CLI with genkey, up, down, status, check
 - [x] PID file management and daemonization
 - [x] ML-DSA key loading from TOML config
+- [x] Zero Trust access control (per-peer policy engine)
+- [x] Key revocation & suspension lifecycle management
+- [x] Structured audit logging (NDJSON, SOC 2 / FedRAMP / HIPAA)
+- [x] Multi-peer server with peer-to-peer forwarding
+- [x] Hot-reload (SIGHUP) for config and CRL changes
+- [x] Enrollment API for automated provisioning
 - [ ] QUAC 100 hardware acceleration
 - [ ] FIPS 140-3 validated crypto module
-- [ ] Enterprise fleet management
+- [ ] Fleet management dashboard (enterprise)
 - [ ] iOS/Android clients
 - [ ] macOS/Windows clients
 
@@ -299,4 +380,4 @@ Contributions welcome! Please read our contributing guidelines and submit pull r
 ## Support
 
 - GitHub Issues: Bug reports and feature requests
-- Security Issues: security@dyber.io (for responsible disclosure)
+- Security Issues: security@dyber.org (for responsible disclosure)

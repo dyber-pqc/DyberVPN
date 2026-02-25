@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-25T00:00:00Z",
+  "description": "DyberVPN Certificate Revocation List. Managed by 'dybervpn revoke-key' and 'dybervpn suspend-key' commands.",
+  "revoked_keys": []
+}

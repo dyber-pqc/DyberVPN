@@ -74,6 +74,9 @@ impl Default for TunnelConfig {
 /// Configuration for a peer
 #[derive(Debug, Clone)]
 pub struct PeerConfig {
+    /// Human-readable peer name (from config comments or enrollment)
+    pub name: Option<String>,
+    
     /// Peer's public key (X25519)
     pub public_key: [u8; 32],
     
@@ -100,6 +103,7 @@ impl PeerConfig {
     /// Create a new peer config with just a public key
     pub fn new(public_key: [u8; 32]) -> Self {
         Self {
+            name: None,
             public_key,
             pq_public_key: None,
             mldsa_public_key: None,
@@ -108,6 +112,12 @@ impl PeerConfig {
             persistent_keepalive: None,
             preshared_key: None,
         }
+    }
+    
+    /// Set the peer name
+    pub fn with_name(mut self, name: String) -> Self {
+        self.name = Some(name);
+        self
     }
     
     /// Set the endpoint

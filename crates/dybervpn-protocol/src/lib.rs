@@ -36,6 +36,7 @@
 
 pub mod config;
 pub mod crypto;
+pub mod fips;
 pub mod software;
 pub mod types;
 

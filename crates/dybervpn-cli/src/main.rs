@@ -214,6 +214,77 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         output: PathBuf,
     },
+
+    /// Revoke a peer's key (add to CRL, optionally disconnect immediately)
+    RevokeKey {
+        /// Server configuration file path (to locate CRL path)
+        #[arg(short, long)]
+        config: PathBuf,
+
+        /// Peer to revoke (name, public key prefix, or VPN IP)
+        #[arg(short, long)]
+        peer: String,
+
+        /// Reason for revocation
+        #[arg(short, long, default_value = "administrative")]
+        reason: String,
+
+        /// Your identifier (admin email/name for audit trail)
+        #[arg(short = 'b', long)]
+        revoked_by: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// Temporarily suspend a peer's key
+    SuspendKey {
+        /// Server configuration file path
+        #[arg(short, long)]
+        config: PathBuf,
+
+        /// Peer to suspend (name, public key prefix, or VPN IP)
+        #[arg(short, long)]
+        peer: String,
+
+        /// Suspension expiry (RFC 3339 timestamp, or duration like "24h", "7d")
+        #[arg(short, long)]
+        expires: Option<String>,
+
+        /// Your identifier (admin email/name)
+        #[arg(short = 'b', long)]
+        revoked_by: Option<String>,
+    },
+
+    /// Reinstate a previously revoked or suspended key
+    ReinstateKey {
+        /// Server configuration file path
+        #[arg(short, long)]
+        config: PathBuf,
+
+        /// Peer to reinstate (name, public key prefix, or VPN IP)
+        #[arg(short, long)]
+        peer: String,
+    },
+
+    /// List all revoked and suspended keys
+    ListRevoked {
+        /// Server configuration file path
+        #[arg(short, long)]
+        config: PathBuf,
+
+        /// Output as JSON
+        #[arg(short, long)]
+        json: bool,
+    },
+
+    /// Run FIPS 140-3 cryptographic self-tests
+    SelfTest {
+        /// Output as JSON
+        #[arg(short, long)]
+        json: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -249,6 +320,11 @@ fn main() -> Result<()> {
         Commands::ListPeers { config, json } => cmd_list_peers(&config, json),
         Commands::Reload { interface } => cmd_reload(&interface),
         Commands::Enroll { server, token, name, mode, output } => cmd_enroll(&server, &token, &name, &mode, &output),
+        Commands::RevokeKey { config, peer, reason, revoked_by, yes } => cmd_revoke_key(&config, &peer, &reason, revoked_by.as_deref(), yes),
+        Commands::SuspendKey { config, peer, expires, revoked_by } => cmd_suspend_key(&config, &peer, expires.as_deref(), revoked_by.as_deref()),
+        Commands::ReinstateKey { config, peer } => cmd_reinstate_key(&config, &peer),
+        Commands::ListRevoked { config, json } => cmd_list_revoked(&config, json),
+        Commands::SelfTest { json } => cmd_self_test(json),
     }
 }
 
@@ -768,6 +844,78 @@ fn cmd_up(config_path: &PathBuf, foreground: bool) -> Result<()> {
     // Set config path for hot-reload via SIGHUP
     daemon.set_config_path(config_path.to_path_buf());
     
+    // ── Enterprise: Policy Engine ──────────────────────────────────────
+    if config.access_control.enabled {
+        use dybervpn_tunnel::policy::{PolicyConfig, RoleConfig, RuleConfig};
+        let policy_cfg = PolicyConfig {
+            enabled: true,
+            default_action: config.access_control.default_action.clone(),
+            policy_path: config.access_control.policy_path.clone(),
+            role: config.access_control.role.iter().map(|r| RoleConfig {
+                name: r.name.clone(),
+                peers: r.peers.clone(),
+                peer_keys: r.peer_keys.clone(),
+                rule: r.rule.iter().map(|ru| RuleConfig {
+                    action: ru.action.clone(),
+                    network: ru.network.clone(),
+                    ports: ru.ports.clone(),
+                    protocol: ru.protocol.clone(),
+                    description: ru.description.clone(),
+                }).collect(),
+            }).collect(),
+        };
+        daemon.set_policy(policy_cfg);
+        tracing::info!("Access control policy engine enabled");
+    }
+    
+    // ── Enterprise: Revocation Engine ──────────────────────────────────
+    {
+        use dybervpn_tunnel::revocation::SecurityConfig as RevSecConfig;
+        let rev_cfg = RevSecConfig {
+            crl_path: config.security.crl_path.clone(),
+            key_max_age_hours: config.security.key_max_age_hours,
+            session_max_age_hours: config.security.session_max_age_hours,
+            check_interval_secs: config.security.check_interval_secs,
+            auto_disconnect_revoked: config.security.auto_disconnect_revoked,
+        };
+        daemon.set_revocation(rev_cfg);
+        if config.security.crl_path.is_some() {
+            tracing::info!("Key revocation engine enabled (CRL: {})",
+                config.security.crl_path.as_deref().unwrap_or("none"));
+        }
+    }
+    
+    // ── Enterprise: Audit Logger ───────────────────────────────────────
+    if config.audit.enabled {
+        use dybervpn_tunnel::audit::{AuditConfig, EventCategory};
+        let categories: Vec<EventCategory> = config.audit.events.iter().filter_map(|s| {
+            match s.to_lowercase().as_str() {
+                "connection" => Some(EventCategory::Connection),
+                "handshake" => Some(EventCategory::Handshake),
+                "policy" => Some(EventCategory::Policy),
+                "key_management" => Some(EventCategory::KeyManagement),
+                "admin" => Some(EventCategory::Admin),
+                "enrollment" => Some(EventCategory::Enrollment),
+                "data_plane" | "dataplane" => Some(EventCategory::DataPlane),
+                "system" => Some(EventCategory::System),
+                "all" => None, // empty vec = all categories
+                _ => { tracing::warn!("Unknown audit event category: {}", s); None }
+            }
+        }).collect();
+        
+        let audit_cfg = AuditConfig {
+            enabled: true,
+            path: std::path::PathBuf::from(&config.audit.path),
+            max_size_bytes: config.audit.max_size_mb * 1024 * 1024,
+            rotate_count: config.audit.rotate_count,
+            log_data_packets: config.audit.log_data_packets,
+            categories,
+            interface_name: config.interface.name.clone(),
+        };
+        daemon.set_audit(audit_cfg);
+        tracing::info!("Audit logging enabled: {}", config.audit.path);
+    }
+    
     // Get shutdown flag for signal handling
     let shutdown_flag = daemon.shutdown_flag();
     let reload_flag = daemon.reload_flag();
@@ -949,6 +1097,7 @@ fn convert_config(config: &Config) -> Result<TunnelConfig> {
         };
         
         let peer = PeerConfig {
+            name: peer_config.name.clone(),
             public_key,
             pq_public_key,
             mldsa_public_key,
@@ -2241,4 +2390,397 @@ fn cmd_verify(file: &Path, key_path: &Path, sig_path: Option<&Path>) -> Result<(
     }
     
     Ok(())
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Enterprise Key Lifecycle Commands
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Resolve a peer identifier (name, key prefix, or IP) to a (public_key_bytes, display_name) pair.
+/// Reads the server config and scans [[peer]] blocks + comment names.
+fn resolve_peer_from_config(config_path: &Path, identifier: &str) -> Result<([u8; 32], String)> {
+    let config_str = fs::read_to_string(config_path)
+        .with_context(|| format!("Failed to read config: {}", config_path.display()))?;
+
+    let config: Config = toml::from_str(&config_str)
+        .context("Failed to parse config file")?;
+
+    // Also extract comment names by scanning raw lines
+    let lines: Vec<&str> = config_str.lines().collect();
+    let mut peer_names: Vec<String> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim() == "[[peer]]" {
+            let mut name = String::new();
+            if i > 0 {
+                for j in (0..i).rev() {
+                    let l = lines[j].trim();
+                    if l.starts_with("# Peer:") {
+                        name = l.trim_start_matches("# Peer:").trim()
+                            .split('(').next().unwrap_or("").trim().to_string();
+                        break;
+                    }
+                    if !l.starts_with('#') && !l.is_empty() {
+                        break;
+                    }
+                }
+            }
+            peer_names.push(name);
+        }
+    }
+
+    let id_lower = identifier.to_lowercase();
+    let mut matches: Vec<([u8; 32], String)> = Vec::new();
+
+    for (i, peer) in config.peer.iter().enumerate() {
+        // Prefer the structured `name` field; fall back to comment-based name
+        let name = peer.name.as_deref()
+            .or_else(|| peer_names.get(i)
+                .and_then(|n| if n.is_empty() { None } else { Some(n.as_str()) })
+            );
+
+        let pk_bytes = base64::decode(&peer.public_key)
+            .ok()
+            .filter(|b| b.len() == 32);
+        let pk_hex = pk_bytes.as_ref()
+            .map(|b| hex::encode(&b[..4]))
+            .unwrap_or_default();
+
+        let matches_name = name.map(|n| n.to_lowercase().contains(&id_lower)).unwrap_or(false);
+        let matches_key = peer.public_key.to_lowercase().starts_with(&id_lower)
+            || pk_hex.starts_with(&id_lower);
+        let matches_ip = peer.allowed_ips.contains(identifier);
+
+        if matches_name || matches_key || matches_ip {
+            if let Some(ref bytes) = pk_bytes {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(bytes);
+                let display = name.unwrap_or("unnamed").to_string();
+                matches.push((arr, display));
+            }
+        }
+    }
+
+    match matches.len() {
+        0 => anyhow::bail!(
+            "No peer found matching '{}'. Use 'dybervpn list-peers -c {}' to see all peers.",
+            identifier, config_path.display()
+        ),
+        1 => Ok(matches.into_iter().next().unwrap()),
+        n => {
+            eprintln!("Multiple peers ({}) match '{}'. Be more specific.", n, identifier);
+            for (pk, name) in &matches {
+                eprintln!("  - {} (key: {}...)", name, hex::encode(&pk[..4]));
+            }
+            anyhow::bail!("Ambiguous peer identifier");
+        }
+    }
+}
+
+/// Parse a revocation reason string into the enum
+fn parse_revocation_reason(s: &str) -> dybervpn_tunnel::revocation::RevocationReason {
+    use dybervpn_tunnel::revocation::RevocationReason;
+    match s.to_lowercase().as_str() {
+        "employee_departed" | "departed" | "left" => RevocationReason::EmployeeDeparted,
+        "key_compromised" | "compromised" => RevocationReason::KeyCompromised,
+        "device_lost" | "lost" | "stolen" => RevocationReason::DeviceLost,
+        "key_superseded" | "superseded" | "rotated" => RevocationReason::KeySuperseded,
+        "policy_violation" | "violation" => RevocationReason::PolicyViolation,
+        "administrative" | "admin" => RevocationReason::Administrative,
+        "suspended" | "suspend" => RevocationReason::Suspended,
+        other => RevocationReason::Other(other.to_string()),
+    }
+}
+
+/// Get the CRL path from config, with a sensible default
+fn get_crl_path(config_path: &Path) -> Result<PathBuf> {
+    let config_str = fs::read_to_string(config_path)
+        .with_context(|| format!("Failed to read config: {}", config_path.display()))?;
+    let config: Config = toml::from_str(&config_str)
+        .context("Failed to parse config file")?;
+
+    if let Some(ref crl) = config.security.crl_path {
+        Ok(PathBuf::from(crl))
+    } else {
+        // Default: same directory as the config file
+        let dir = config_path.parent().unwrap_or(Path::new("."));
+        Ok(dir.join("revoked-keys.json"))
+    }
+}
+
+/// Revoke a peer's key — adds to CRL, optionally triggers live disconnect via reload
+fn cmd_revoke_key(
+    config_path: &Path,
+    peer_identifier: &str,
+    reason: &str,
+    revoked_by: Option<&str>,
+    skip_confirm: bool,
+) -> Result<()> {
+    use dybervpn_tunnel::revocation::{RevocationEngine, SecurityConfig as RevSecConfig};
+
+    let (peer_key, peer_name) = resolve_peer_from_config(config_path, peer_identifier)?;
+    let crl_path = get_crl_path(config_path)?;
+    let reason_enum = parse_revocation_reason(reason);
+
+    if !skip_confirm {
+        println!("Revoking key for peer:");
+        println!("  Name:        {}", peer_name);
+        println!("  Public key:  {}...", hex::encode(&peer_key[..8]));
+        println!("  Reason:      {}", reason);
+        println!("  CRL file:    {}", crl_path.display());
+        if let Some(by) = revoked_by {
+            println!("  Revoked by:  {}", by);
+        }
+        println!();
+        print!("Confirm revocation? [y/N] ");
+        std::io::stdout().flush()?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Create engine pointing at CRL file
+    let rev_cfg = RevSecConfig {
+        crl_path: Some(crl_path.to_string_lossy().to_string()),
+        ..RevSecConfig::default()
+    };
+    let mut engine = RevocationEngine::new(rev_cfg);
+
+    engine.revoke_key(&peer_key, Some(&peer_name), reason_enum, revoked_by)
+        .map_err(|e| anyhow::anyhow!("Revocation failed: {}", e))?;
+
+    println!("\x1b[1;32m✓ Key revoked for peer '{}'\x1b[0m", peer_name);
+    println!();
+    println!("  Fingerprint: {}", hex::encode(&peer_key[..8]));
+    println!("  Reason:      {}", reason);
+    println!("  CRL file:    {}", crl_path.display());
+    println!();
+    println!("The revocation takes effect:");
+    println!("  • Immediately for new handshake attempts (if daemon has [security] crl_path set)");
+    println!("  • On next CRL check for existing sessions (default: every 5 minutes)");
+    println!("  • Immediately if you send a config reload:");
+    println!("      dybervpn reload dvpn0");
+    println!();
+    println!("To also remove the peer from the config entirely:");
+    println!("  dybervpn remove-peer -c {} -p {}", config_path.display(), peer_identifier);
+
+    Ok(())
+}
+
+/// Temporarily suspend a peer's key
+fn cmd_suspend_key(
+    config_path: &Path,
+    peer_identifier: &str,
+    expires: Option<&str>,
+    revoked_by: Option<&str>,
+) -> Result<()> {
+    use dybervpn_tunnel::revocation::{RevocationEngine, SecurityConfig as RevSecConfig};
+
+    let (peer_key, peer_name) = resolve_peer_from_config(config_path, peer_identifier)?;
+    let crl_path = get_crl_path(config_path)?;
+
+    // Parse expiry: accept RFC 3339 or durations like "24h", "7d", "1w"
+    let expires_rfc3339 = expires.map(|e| {
+        // Try RFC 3339 first
+        if chrono::DateTime::parse_from_rfc3339(e).is_ok() {
+            return e.to_string();
+        }
+        // Parse duration shortcuts
+        let now = chrono::Utc::now();
+        let e_lower = e.to_lowercase();
+        let duration = if let Some(h) = e_lower.strip_suffix('h') {
+            h.parse::<i64>().ok().and_then(|n| chrono::TimeDelta::try_hours(n))
+        } else if let Some(d) = e_lower.strip_suffix('d') {
+            d.parse::<i64>().ok().and_then(|n| chrono::TimeDelta::try_days(n))
+        } else if let Some(w) = e_lower.strip_suffix('w') {
+            w.parse::<i64>().ok().and_then(|n| chrono::TimeDelta::try_weeks(n))
+        } else {
+            None
+        };
+        match duration {
+            Some(d) => (now + d).to_rfc3339(),
+            None => {
+                eprintln!("Warning: could not parse expiry '{}', suspension will be indefinite", e);
+                String::new()
+            }
+        }
+    });
+
+    let expires_str = expires_rfc3339.as_deref().filter(|s| !s.is_empty());
+
+    let rev_cfg = RevSecConfig {
+        crl_path: Some(crl_path.to_string_lossy().to_string()),
+        ..RevSecConfig::default()
+    };
+    let mut engine = RevocationEngine::new(rev_cfg);
+
+    engine.suspend_key(&peer_key, Some(&peer_name), expires_str, revoked_by)
+        .map_err(|e| anyhow::anyhow!("Suspension failed: {}", e))?;
+
+    println!("\x1b[1;33m⏸ Key suspended for peer '{}'\x1b[0m", peer_name);
+    println!();
+    println!("  Fingerprint: {}", hex::encode(&peer_key[..8]));
+    if let Some(exp) = expires_str {
+        println!("  Expires:     {}", exp);
+    } else {
+        println!("  Expires:     indefinite (manual reinstatement required)");
+    }
+    println!("  CRL file:    {}", crl_path.display());
+    println!();
+    println!("To reinstate:");
+    println!("  dybervpn reinstate-key -c {} -p {}", config_path.display(), peer_identifier);
+
+    Ok(())
+}
+
+/// Reinstate a previously revoked or suspended key
+fn cmd_reinstate_key(config_path: &Path, peer_identifier: &str) -> Result<()> {
+    use dybervpn_tunnel::revocation::{RevocationEngine, SecurityConfig as RevSecConfig};
+
+    let (peer_key, peer_name) = resolve_peer_from_config(config_path, peer_identifier)?;
+    let crl_path = get_crl_path(config_path)?;
+
+    let rev_cfg = RevSecConfig {
+        crl_path: Some(crl_path.to_string_lossy().to_string()),
+        ..RevSecConfig::default()
+    };
+    let mut engine = RevocationEngine::new(rev_cfg);
+
+    if !engine.is_revoked(&peer_key) {
+        println!("Peer '{}' ({}) is not currently revoked or suspended.",
+            peer_name, hex::encode(&peer_key[..4]));
+        return Ok(());
+    }
+
+    engine.reinstate_key(&peer_key)
+        .map_err(|e| anyhow::anyhow!("Reinstatement failed: {}", e))?;
+
+    println!("\x1b[1;32m✓ Key reinstated for peer '{}'\x1b[0m", peer_name);
+    println!();
+    println!("  Fingerprint: {}", hex::encode(&peer_key[..8]));
+    println!("  CRL file:    {} (updated)", crl_path.display());
+    println!();
+    println!("The peer can now reconnect. To force immediate effect:");
+    println!("  dybervpn reload dvpn0");
+
+    Ok(())
+}
+
+/// List all revoked and suspended keys
+fn cmd_list_revoked(config_path: &Path, json: bool) -> Result<()> {
+    use dybervpn_tunnel::revocation::{RevocationEngine, SecurityConfig as RevSecConfig};
+
+    let crl_path = get_crl_path(config_path)?;
+
+    if !crl_path.exists() {
+        if json {
+            println!("[]");
+        } else {
+            println!("No CRL file found at {}", crl_path.display());
+            println!("No keys have been revoked yet.");
+        }
+        return Ok(());
+    }
+
+    let rev_cfg = RevSecConfig {
+        crl_path: Some(crl_path.to_string_lossy().to_string()),
+        ..RevSecConfig::default()
+    };
+    let engine = RevocationEngine::new(rev_cfg);
+    let revoked = engine.list_revoked();
+
+    if json {
+        let entries: Vec<serde_json::Value> = revoked.iter().map(|e| {
+            serde_json::json!({
+                "fingerprint": e.public_key_fingerprint,
+                "name": e.name,
+                "reason": format!("{}", e.reason),
+                "revoked_at": e.revoked_at,
+                "revoked_by": e.revoked_by,
+                "expires_at": e.expires_at,
+            })
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+
+    println!("Revoked/Suspended Keys (CRL: {})", crl_path.display());
+    println!();
+
+    if revoked.is_empty() {
+        println!("  (no revoked keys)");
+        return Ok(());
+    }
+
+    for (i, entry) in revoked.iter().enumerate() {
+        let status_icon = match entry.reason {
+            dybervpn_tunnel::revocation::RevocationReason::Suspended => "⏸",
+            _ => "✗",
+        };
+        let name_display = entry.name.as_deref().unwrap_or("unnamed");
+
+        println!("  {} [{}] {}", status_icon, i + 1, name_display);
+        println!("      Fingerprint: {}", entry.public_key_fingerprint);
+        println!("      Reason:      {}", entry.reason);
+        println!("      Revoked at:  {}", entry.revoked_at);
+        if let Some(ref by) = entry.revoked_by {
+            println!("      Revoked by:  {}", by);
+        }
+        if let Some(ref exp) = entry.expires_at {
+            println!("      Expires:     {}", exp);
+        }
+        println!();
+    }
+
+    println!("Total: {} entries", revoked.len());
+
+    Ok(())
+}
+
+/// Run FIPS 140-3 cryptographic self-tests
+fn cmd_self_test(json: bool) -> Result<()> {
+    let backend = dybervpn_protocol::select_backend();
+    
+    if !json {
+        println!("Running FIPS 140-3 cryptographic self-tests...");
+        println!("Backend: {}\n", backend.name());
+    }
+    
+    let report = dybervpn_protocol::fips::run_on_demand_self_tests(backend.as_ref());
+    
+    if json {
+        // Machine-readable output for CI/CD and compliance tooling
+        let json_results: Vec<serde_json::Value> = report.results.iter().map(|r| {
+            serde_json::json!({
+                "name": r.name,
+                "passed": r.passed,
+                "duration_us": r.duration.as_micros(),
+                "error": r.error,
+            })
+        }).collect();
+        
+        let output = serde_json::json!({
+            "fips_self_test": {
+                "passed": report.passed,
+                "module_state": format!("{}", report.module_state),
+                "backend": report.backend,
+                "timestamp": report.timestamp,
+                "duration_us": report.duration.as_micros() as u64,
+                "tests": json_results,
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        // Human-readable report
+        println!("{}", report);
+    }
+    
+    if report.passed {
+        Ok(())
+    } else {
+        anyhow::bail!("FIPS 140-3 self-tests FAILED")
+    }
 }

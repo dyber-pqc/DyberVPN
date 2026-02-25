@@ -1,0 +1,126 @@
+# DyberVPN Enterprise Server Configuration
+# Post-Quantum VPN with Zero Trust Access Control, Key Lifecycle, and Audit Logging
+#
+# This example demonstrates all enterprise security features.
+# Copy to /etc/dybervpn/server.toml and customize.
+
+[interface]
+name = "dvpn0"
+private_key = "GENERATE_WITH_dybervpn_genkey_m_hybrid"
+pq_private_key = "GENERATE_WITH_dybervpn_genkey_m_hybrid"
+listen_port = 51820
+address = "10.200.200.1/24"
+mode = "hybrid"   # hybrid | pq-only | classic
+
+# ─── Hardware Acceleration (optional) ─────────────────────────────────────────
+[hardware]
+backend = "auto"          # auto | software | quac100
+
+# ─── Enrollment API (optional, for automated peer provisioning) ───────────────
+[enrollment]
+enabled = false
+# listen = "0.0.0.0:8443"
+# token = "CHANGE_ME_strong_random_token"
+
+# ─── Security / Key Lifecycle ─────────────────────────────────────────────────
+# Controls key revocation, age limits, and session expiry.
+[security]
+crl_path = "/etc/dybervpn/revoked-keys.json"
+key_max_age_hours = 720          # 30 days — force key rotation after this
+session_max_age_hours = 24       # Force re-handshake daily
+check_interval_secs = 300        # Check for revoked/expired peers every 5 min
+auto_disconnect_revoked = true   # Immediately drop sessions for revoked keys
+
+# ─── Access Control (Zero Trust) ──────────────────────────────────────────────
+# Per-peer role-based access control with deny-by-default.
+# Rules are evaluated in order within each role; first match wins.
+[access_control]
+enabled = true
+default_action = "deny"    # Zero Trust: deny unless explicitly allowed
+
+# Engineering team — access to dev/staging, restricted from production DB
+[[access_control.role]]
+name = "engineering"
+peers = ["alice-laptop", "bob-workstation"]
+# peer_keys = ["aabbccdd"]  # Alternative: match by key fingerprint prefix
+
+[[access_control.role.rule]]
+action = "allow"
+network = "10.200.100.0/24"
+ports = "443,8080-8090"
+protocol = "tcp"
+description = "Dev/staging HTTPS and API"
+
+[[access_control.role.rule]]
+action = "allow"
+network = "10.200.100.0/24"
+protocol = "icmp"
+description = "Allow ping for diagnostics"
+
+[[access_control.role.rule]]
+action = "deny"
+network = "10.200.50.0/24"
+description = "Block production database subnet"
+
+# DevOps team — full access to infrastructure
+[[access_control.role]]
+name = "devops"
+peers = ["charlie-admin"]
+
+[[access_control.role.rule]]
+action = "allow"
+network = "10.200.0.0/16"
+description = "Full infrastructure access"
+
+# Contractors — read-only API access
+[[access_control.role]]
+name = "contractors"
+peers = ["contractor-01"]
+
+[[access_control.role.rule]]
+action = "allow"
+network = "10.200.100.10/32"
+ports = "443"
+protocol = "tcp"
+description = "API gateway only, HTTPS"
+
+# ─── Audit Logging (SOC 2 / FedRAMP / HIPAA) ─────────────────────────────────
+# Structured NDJSON audit events for compliance and incident response.
+[audit]
+enabled = true
+path = "/var/log/dybervpn/audit.jsonl"
+max_size_mb = 100          # Rotate after 100 MB
+rotate_count = 10          # Keep 10 rotated files (1 GB total)
+log_data_packets = false   # Set true for deep packet logging (high volume!)
+events = ["connection", "handshake", "policy", "key_management", "admin"]
+
+# ─── Peers ────────────────────────────────────────────────────────────────────
+
+# Peer: alice-laptop (Engineering)
+# The `name` field links this peer to the "engineering" role in [access_control].
+[[peer]]
+name = "alice-laptop"
+public_key = "REPLACE_WITH_PEER_PUBLIC_KEY"
+pq_public_key = "REPLACE_WITH_PEER_PQ_PUBLIC_KEY"
+allowed_ips = "10.200.200.2/32"
+
+# Peer: bob-workstation (Engineering)
+[[peer]]
+name = "bob-workstation"
+public_key = "REPLACE_WITH_PEER_PUBLIC_KEY"
+pq_public_key = "REPLACE_WITH_PEER_PQ_PUBLIC_KEY"
+allowed_ips = "10.200.200.3/32"
+
+# Peer: charlie-admin (DevOps)
+[[peer]]
+name = "charlie-admin"
+public_key = "REPLACE_WITH_PEER_PUBLIC_KEY"
+pq_public_key = "REPLACE_WITH_PEER_PQ_PUBLIC_KEY"
+allowed_ips = "10.200.200.10/32"
+
+# Peer: contractor-01 (Contractors)
+[[peer]]
+name = "contractor-01"
+public_key = "REPLACE_WITH_PEER_PUBLIC_KEY"
+pq_public_key = "REPLACE_WITH_PEER_PQ_PUBLIC_KEY"
+allowed_ips = "10.200.200.50/32"

@@ -4,11 +4,14 @@
 
 #![warn(missing_docs)]
 
+pub mod audit;
 pub mod config;
 pub mod daemon;
 pub mod device;
 pub mod enrollment;
 pub mod error;
+pub mod policy;
+pub mod revocation;
 pub mod tunnel;
 
 // Platform-specific modules - only compile on their target
@@ -22,10 +25,13 @@ pub mod macos;
 pub mod windows;
 
 // Re-exports
+pub use audit::{AuditConfig, AuditLogger};
 pub use config::{TunnelConfig, PeerConfig};
 pub use daemon::Daemon;
 pub use device::DeviceHandle;
 pub use error::{TunnelError, TunnelResult};
+pub use policy::{PolicyConfig, PolicyEngine, PolicyAction};
+pub use revocation::{RevocationEngine, RevocationReason, SecurityConfig, KeyStatus};
 pub use tunnel::{VpnTunnel, TunnelState, PeerStats};
 
 /// Maximum transmission unit (MTU) for WireGuard
