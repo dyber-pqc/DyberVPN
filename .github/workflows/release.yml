@@ -175,27 +175,46 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
 
-  # PQ-sign release artifacts (only if signing key is configured)
+  # PQ-sign release artifacts (optional — requires MLDSA_SIGNING_KEY secret)
   sign:
     name: PQ Sign Artifacts
-    needs: [build-binaries]
+    needs: [build-binaries, release]
     runs-on: ubuntu-latest
-    if: ${{ secrets.MLDSA_SIGNING_KEY != '' }}
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check signing key
+        id: check_key
+        env:
+          SIGNING_KEY: ${{ secrets.MLDSA_SIGNING_KEY }}
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "No MLDSA_SIGNING_KEY configured, skipping PQ signing"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.check_key.outputs.skip != 'true'
+
       - uses: Swatinem/rust-cache@v2
+        if: steps.check_key.outputs.skip != 'true'
 
       - name: Build dybervpn CLI
+        if: steps.check_key.outputs.skip != 'true'
         run: cargo build --release --bin dybervpn
 
       - name: Download all artifacts
+        if: steps.check_key.outputs.skip != 'true'
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
           merge-multiple: true
 
       - name: PQ-sign artifacts with ML-DSA-65
+        if: steps.check_key.outputs.skip != 'true'
         env:
           MLDSA_SIGNING_KEY_B64: ${{ secrets.MLDSA_SIGNING_KEY }}
         run: |
@@ -209,6 +228,7 @@ jobs:
           shred -u signing.mldsa.key 2>/dev/null || rm -f signing.mldsa.key
 
       - name: Upload signatures to release
+        if: steps.check_key.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.sig.mldsa

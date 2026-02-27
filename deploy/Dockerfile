@@ -2,7 +2,7 @@
 # Post-Quantum VPN with ML-KEM-768 + ML-DSA-65
 
 # Build stage
-FROM rust:1.85-slim-bookworm AS builder
+FROM rust:1-slim-bookworm AS builder
 
 WORKDIR /build
 
@@ -38,10 +38,7 @@ RUN mkdir -p /etc/dybervpn /var/run/dybervpn
 # Note: Use --cap-add=NET_ADMIN when running the container for TUN access
 
 EXPOSE 51820/udp
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD dybervpn status dvpn0 || exit 1
+EXPOSE 51821/tcp
 
 ENTRYPOINT ["/usr/local/bin/dybervpn"]
 CMD ["up", "-c", "/etc/dybervpn/config.toml", "-f"]
