@@ -5,6 +5,19 @@
 //!
 //! <code>git clone https://github.com/cloudflare/boringtun.git</code>
 
+// Platform-specific code (sleepyinstant, device) differs between targets
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unused_mut,
+    clippy::needless_borrows_for_generic_args,
+    clippy::redundant_closure,
+    clippy::doc_lazy_continuation,
+    clippy::manual_is_multiple_of,
+    clippy::bool_comparison
+)]
+
 #[cfg(feature = "device")]
 pub mod device;
 

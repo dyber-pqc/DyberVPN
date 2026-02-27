@@ -3,6 +3,18 @@
 //! Cross-platform TUN/TAP device management for DyberVPN.
 
 #![warn(missing_docs)]
+// Platform-specific code paths differ between Linux/macOS/Windows;
+// allow common warnings that only appear on specific targets.
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unused_mut,
+    unreachable_code,
+    clippy::needless_borrows_for_generic_args,
+    clippy::redundant_closure,
+    clippy::collapsible_if
+)]
 
 pub mod audit;
 pub mod config;

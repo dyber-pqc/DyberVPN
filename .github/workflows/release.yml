@@ -50,7 +50,7 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools
+          sudo apt-get install -y musl-tools musl-dev linux-headers-generic pkg-config
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -60,6 +60,8 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} --bin dybervpn
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          # musl needs explicit CC for ring's C/asm compilation
+          CC_x86_64_unknown_linux_musl: musl-gcc
 
       - name: Package
         run: |
@@ -79,10 +81,11 @@ jobs:
           name: dybervpn-${{ matrix.target }}
           path: dybervpn-*.tar.gz
 
-  # Build and push Docker image
+  # Build and push Docker image (non-blocking — GHCR may not be configured)
   docker:
     name: Docker
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -103,7 +106,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/dyber-pqc/dybervpn
+          images: ghcr.io/${{ github.repository_owner }}/dybervpn
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -167,7 +170,7 @@ jobs:
             sudo mv dybervpn /usr/local/bin/
 
             # Or use Docker
-            docker pull ghcr.io/dyber-pqc/dybervpn:${{ steps.version.outputs.version }}
+            docker pull ghcr.io/${{ github.repository_owner }}/dybervpn:${{ steps.version.outputs.version }}
             ```
           files: |
             artifacts/*.tar.gz

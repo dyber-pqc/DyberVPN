@@ -8,6 +8,8 @@
 //! - Zero Trust device posture assessment
 
 #![warn(missing_docs)]
+// Platform-specific posture checks differ between Linux/macOS/Windows
+#![allow(unused_imports, unused_variables, dead_code)]
 
 pub mod health;
 pub mod logging;
