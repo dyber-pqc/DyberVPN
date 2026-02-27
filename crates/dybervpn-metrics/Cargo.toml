@@ -14,7 +14,7 @@ server = ["axum"]
 
 [dependencies]
 # Metrics
-prometheus-client = { version = "0.22", optional = true }
+prometheus-client = { version = "0.24", optional = true }
 
 # Tracing
 tracing.workspace = true
@@ -28,7 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 # HTTP server for metrics endpoint
-axum = { version = "0.7", features = ["http1"], optional = true }
+axum = { version = "0.8", features = ["http1"], optional = true }
 tokio.workspace = true
 
 [dev-dependencies]
