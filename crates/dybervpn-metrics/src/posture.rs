@@ -150,7 +150,18 @@ async fn check_os_version() -> PostureCheck {
                     let version_str = format!("Windows {}.{}", major, build);
                     // Windows 10 build 19041+ or Windows 11
                     let supported = (major == 10 && build >= 19041) || major > 10;
-                    (supported, format!("{} — {}", version_str, if supported { "supported" } else { "below minimum version" }))
+                    (
+                        supported,
+                        format!(
+                            "{} — {}",
+                            version_str,
+                            if supported {
+                                "supported"
+                            } else {
+                                "below minimum version"
+                            }
+                        ),
+                    )
                 } else {
                     (false, "Could not parse OS version".to_string())
                 }
@@ -170,17 +181,39 @@ async fn check_os_version() -> PostureCheck {
             Ok(out) if out.status.success() => {
                 let kernel = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 // Kernel 5.10+ is considered good
-                let major: u64 = kernel.split('.').next().and_then(|v| v.parse().ok()).unwrap_or(0);
-                let minor: u64 = kernel.split('.').nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                let major: u64 = kernel
+                    .split('.')
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                let minor: u64 = kernel
+                    .split('.')
+                    .nth(1)
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
                 let supported = major > 5 || (major == 5 && minor >= 10);
-                (supported, format!("Linux {} — {}", kernel, if supported { "supported" } else { "kernel too old" }))
+                (
+                    supported,
+                    format!(
+                        "Linux {} — {}",
+                        kernel,
+                        if supported {
+                            "supported"
+                        } else {
+                            "kernel too old"
+                        }
+                    ),
+                )
             }
             _ => (false, "Failed to query kernel version".to_string()),
         }
     };
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let (passed, detail) = (true, "OS check not implemented for this platform".to_string());
+    let (passed, detail) = (
+        true,
+        "OS check not implemented for this platform".to_string(),
+    );
 
     PostureCheck {
         name: "OS Version".to_string(),
@@ -212,7 +245,17 @@ async fn check_firewall() -> PostureCheck {
                 let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 // Result is [true, true, true] or similar JSON array
                 let all_enabled = text.contains("true") && !text.contains("false");
-                (all_enabled, format!("Windows Firewall: {}", if all_enabled { "all profiles enabled" } else { "some profiles disabled" }))
+                (
+                    all_enabled,
+                    format!(
+                        "Windows Firewall: {}",
+                        if all_enabled {
+                            "all profiles enabled"
+                        } else {
+                            "some profiles disabled"
+                        }
+                    ),
+                )
             }
             _ => (false, "Could not query firewall status".to_string()),
         }
@@ -230,7 +273,17 @@ async fn check_firewall() -> PostureCheck {
             Ok(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout);
                 let has_rules = text.lines().count() > 2;
-                (has_rules, format!("nftables: {}", if has_rules { "rules configured" } else { "no rules" }))
+                (
+                    has_rules,
+                    format!(
+                        "nftables: {}",
+                        if has_rules {
+                            "rules configured"
+                        } else {
+                            "no rules"
+                        }
+                    ),
+                )
             }
             _ => {
                 // Fallback: check iptables
@@ -242,7 +295,17 @@ async fn check_firewall() -> PostureCheck {
                     Ok(out) if out.status.success() => {
                         let text = String::from_utf8_lossy(&out.stdout);
                         let has_rules = text.lines().count() > 6;
-                        (has_rules, format!("iptables: {}", if has_rules { "rules configured" } else { "default policy only" }))
+                        (
+                            has_rules,
+                            format!(
+                                "iptables: {}",
+                                if has_rules {
+                                    "rules configured"
+                                } else {
+                                    "default policy only"
+                                }
+                            ),
+                        )
                     }
                     _ => (false, "No firewall detected".to_string()),
                 }
@@ -251,7 +314,10 @@ async fn check_firewall() -> PostureCheck {
     };
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let (passed, detail) = (true, "Firewall check not implemented for this platform".to_string());
+    let (passed, detail) = (
+        true,
+        "Firewall check not implemented for this platform".to_string(),
+    );
 
     PostureCheck {
         name: "Firewall".to_string(),
@@ -283,7 +349,17 @@ async fn check_disk_encryption() -> PostureCheck {
                 let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 // ProtectionStatus: 1 = On, 0 = Off
                 let encrypted = text.contains('1');
-                (encrypted, format!("BitLocker C: {}", if encrypted { "protected" } else { "not protected" }))
+                (
+                    encrypted,
+                    format!(
+                        "BitLocker C: {}",
+                        if encrypted {
+                            "protected"
+                        } else {
+                            "not protected"
+                        }
+                    ),
+                )
             }
             _ => (false, "Could not query BitLocker status".to_string()),
         }
@@ -300,14 +376,27 @@ async fn check_disk_encryption() -> PostureCheck {
             Ok(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout);
                 let has_crypt = text.contains("crypt");
-                (has_crypt, format!("LUKS: {}", if has_crypt { "encrypted volumes found" } else { "no encrypted volumes" }))
+                (
+                    has_crypt,
+                    format!(
+                        "LUKS: {}",
+                        if has_crypt {
+                            "encrypted volumes found"
+                        } else {
+                            "no encrypted volumes"
+                        }
+                    ),
+                )
             }
             _ => (false, "Could not query disk encryption".to_string()),
         }
     };
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let (passed, detail) = (true, "Disk encryption check not implemented for this platform".to_string());
+    let (passed, detail) = (
+        true,
+        "Disk encryption check not implemented for this platform".to_string(),
+    );
 
     PostureCheck {
         name: "Disk Encryption".to_string(),
@@ -342,7 +431,13 @@ async fn check_antivirus() -> PostureCheck {
                     let rtp_enabled = val["RealTimeProtectionEnabled"].as_bool().unwrap_or(false);
                     let mode = val["AMRunningMode"].as_str().unwrap_or("Unknown");
                     let ok = av_enabled && rtp_enabled;
-                    (ok, format!("Windows Defender: AV={}, RTP={}, Mode={}", av_enabled, rtp_enabled, mode))
+                    (
+                        ok,
+                        format!(
+                            "Windows Defender: AV={}, RTP={}, Mode={}",
+                            av_enabled, rtp_enabled, mode
+                        ),
+                    )
                 } else {
                     (false, "Could not parse Defender status".to_string())
                 }
@@ -360,12 +455,18 @@ async fn check_antivirus() -> PostureCheck {
             .await;
         match clam {
             Ok(out) if out.status.success() => (true, "ClamAV daemon found".to_string()),
-            _ => (true, "No AV required on managed Linux (policy-dependent)".to_string()),
+            _ => (
+                true,
+                "No AV required on managed Linux (policy-dependent)".to_string(),
+            ),
         }
     };
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let (passed, detail) = (true, "AV check not implemented for this platform".to_string());
+    let (passed, detail) = (
+        true,
+        "AV check not implemented for this platform".to_string(),
+    );
 
     PostureCheck {
         name: "Antivirus".to_string(),
@@ -397,7 +498,18 @@ async fn check_screen_lock() -> PostureCheck {
                 let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if let Ok(secs) = text.parse::<u64>() {
                     let ok = secs > 0 && secs <= 900; // Must lock within 15 minutes
-                    (ok, format!("Screen lock timeout: {}s — {}", secs, if ok { "compliant" } else { "too long or disabled" }))
+                    (
+                        ok,
+                        format!(
+                            "Screen lock timeout: {}s — {}",
+                            secs,
+                            if ok {
+                                "compliant"
+                            } else {
+                                "too long or disabled"
+                            }
+                        ),
+                    )
                 } else {
                     // No policy set, but Windows defaults usually have screen lock
                     (true, "Screen lock: using system defaults".to_string())
@@ -414,7 +526,10 @@ async fn check_screen_lock() -> PostureCheck {
     };
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let (passed, detail) = (true, "Screen lock check not implemented for this platform".to_string());
+    let (passed, detail) = (
+        true,
+        "Screen lock check not implemented for this platform".to_string(),
+    );
 
     PostureCheck {
         name: "Screen Lock".to_string(),

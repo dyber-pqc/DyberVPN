@@ -422,7 +422,10 @@ impl AuditLogger {
             EventCategory::System,
             EventType::DaemonStarted,
             EventOutcome::Success,
-            format!("DyberVPN daemon started in {} mode with {} peers", mode, peer_count),
+            format!(
+                "DyberVPN daemon started in {} mode with {} peers",
+                mode, peer_count
+            ),
         );
         ev.mode = Some(mode.to_string());
         self.log(ev);
@@ -440,7 +443,12 @@ impl AuditLogger {
     }
 
     /// Log peer session established
-    pub fn log_session_established(&self, peer_key: &[u8; 32], peer_name: Option<&str>, endpoint: SocketAddr) {
+    pub fn log_session_established(
+        &self,
+        peer_key: &[u8; 32],
+        peer_name: Option<&str>,
+        endpoint: SocketAddr,
+    ) {
         let mut ev = self.build_event(
             EventCategory::Connection,
             EventType::SessionEstablished,
@@ -522,6 +530,7 @@ impl AuditLogger {
     }
 
     /// Log a policy decision (allow/deny)
+    #[allow(clippy::too_many_arguments)]
     pub fn log_policy_decision(
         &self,
         peer_key: &[u8; 32],
@@ -578,12 +587,7 @@ impl AuditLogger {
     }
 
     /// Log key revocation
-    pub fn log_key_revoked(
-        &self,
-        peer_key: &[u8; 32],
-        peer_name: Option<&str>,
-        reason: &str,
-    ) {
+    pub fn log_key_revoked(&self, peer_key: &[u8; 32], peer_name: Option<&str>, reason: &str) {
         let mut ev = self.build_event(
             EventCategory::KeyManagement,
             EventType::KeyRevoked,
@@ -601,7 +605,12 @@ impl AuditLogger {
     }
 
     /// Log key rotation event
-    pub fn log_key_rotation(&self, peer_key: &[u8; 32], peer_name: Option<&str>, event_type: EventType) {
+    pub fn log_key_rotation(
+        &self,
+        peer_key: &[u8; 32],
+        peer_name: Option<&str>,
+        event_type: EventType,
+    ) {
         let mut ev = self.build_event(
             EventCategory::KeyManagement,
             event_type,
@@ -667,7 +676,12 @@ impl AuditLogger {
     }
 
     /// Log session expiry / forced re-key
-    pub fn log_session_expired(&self, peer_key: &[u8; 32], peer_name: Option<&str>, age_hours: u64) {
+    pub fn log_session_expired(
+        &self,
+        peer_key: &[u8; 32],
+        peer_name: Option<&str>,
+        age_hours: u64,
+    ) {
         let mut ev = self.build_event(
             EventCategory::Connection,
             EventType::SessionExpired,
@@ -727,11 +741,7 @@ impl AuditLogger {
 
         // Re-open
         let mut guard = self.inner.file.lock().unwrap();
-        *guard = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .ok();
+        *guard = OpenOptions::new().create(true).append(true).open(path).ok();
 
         tracing::info!("Audit log rotated: {} -> {}", path.display(), rotated);
     }

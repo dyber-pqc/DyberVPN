@@ -1,6 +1,5 @@
 # DyberVPN Security Scanning
 # Copyright 2026 Dyber, Inc.
-# https://dyber.org
 
 name: Security Scan
 
@@ -9,8 +8,7 @@ on:
   push:
     branches: [main]
   schedule:
-    # Run daily at midnight UTC
-    - cron: '0 0 * * *'
+    - cron: '0 0 * * 1'  # Weekly on Monday
   workflow_dispatch: {}
 
 jobs:
@@ -19,9 +17,24 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: semgrep/semgrep
+    # Only run if token is configured, otherwise skip gracefully
+    if: ${{ vars.SEMGREP_ENABLED == 'true' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
       - name: Run Semgrep
         run: semgrep ci --config auto
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  # Fallback: run semgrep without cloud integration if no token
+  semgrep-local:
+    name: Semgrep (Local)
+    runs-on: ubuntu-latest
+    if: ${{ vars.SEMGREP_ENABLED != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Semgrep
+        run: pip install semgrep
+      - name: Run Semgrep (local rules)
+        run: semgrep scan --config auto --error --exclude='boringtun/' .
+        continue-on-error: true

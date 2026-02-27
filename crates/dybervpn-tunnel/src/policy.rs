@@ -214,11 +214,7 @@ impl PolicyEngine {
         let roles = if let Some(ref path) = config.policy_path {
             match Self::load_policy_file(Path::new(path)) {
                 Ok(roles) => {
-                    tracing::info!(
-                        "Loaded {} roles from policy file: {}",
-                        roles.len(),
-                        path
-                    );
+                    tracing::info!("Loaded {} roles from policy file: {}", roles.len(), path);
                     roles
                 }
                 Err(e) => {
@@ -366,8 +362,8 @@ impl PolicyEngine {
     fn load_policy_file(path: &Path) -> Result<Vec<RoleConfig>, String> {
         let content =
             fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-        let roles: Vec<RoleConfig> =
-            serde_json::from_str(&content).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+        let roles: Vec<RoleConfig> = serde_json::from_str(&content)
+            .map_err(|e| format!("parse {}: {}", path.display(), e))?;
         Ok(roles)
     }
 
@@ -453,7 +449,12 @@ impl PolicyEngine {
                 if let Ok(n) = other.parse::<u8>() {
                     Some(n)
                 } else {
-                    tracing::warn!("Unknown protocol '{}' in rule {}:{}", other, role_name, index);
+                    tracing::warn!(
+                        "Unknown protocol '{}' in rule {}:{}",
+                        other,
+                        role_name,
+                        index
+                    );
                     None
                 }
             }
@@ -461,7 +462,14 @@ impl PolicyEngine {
 
         let rule_name = format!("{}:rule-{}", role_name, index);
         if let Some(ref desc) = rule.description {
-            tracing::debug!("  Rule {}: {} {} {} ({})", rule_name, rule.action, rule.network, rule.protocol, desc);
+            tracing::debug!(
+                "  Rule {}: {} {} {} ({})",
+                rule_name,
+                rule.action,
+                rule.network,
+                rule.protocol,
+                desc
+            );
         }
 
         Some(CompiledRule {
@@ -749,7 +757,7 @@ mod tests {
         pkt[9] = 6; // TCP
         pkt[12..16].copy_from_slice(&[10, 0, 0, 2]); // src
         pkt[16..20].copy_from_slice(&[10, 100, 5, 10]); // dst
-        // TCP dst port at offset 22-23
+                                                        // TCP dst port at offset 22-23
         pkt[22] = 0x01;
         pkt[23] = 0xBB; // port 443
 
@@ -819,8 +827,20 @@ mod tests {
         let mut engine = PolicyEngine::new(&config);
 
         let pk = [0xAA; 32];
-        engine.evaluate(&pk, Some("alice"), IpAddr::V4(Ipv4Addr::new(10, 100, 5, 10)), Some(443), Some(6));
-        engine.evaluate(&pk, Some("alice"), IpAddr::V4(Ipv4Addr::new(10, 100, 5, 10)), Some(22), Some(6));
+        engine.evaluate(
+            &pk,
+            Some("alice"),
+            IpAddr::V4(Ipv4Addr::new(10, 100, 5, 10)),
+            Some(443),
+            Some(6),
+        );
+        engine.evaluate(
+            &pk,
+            Some("alice"),
+            IpAddr::V4(Ipv4Addr::new(10, 100, 5, 10)),
+            Some(22),
+            Some(6),
+        );
 
         let (allowed, denied) = engine.stats();
         assert_eq!(allowed, 1);

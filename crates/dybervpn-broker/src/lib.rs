@@ -34,11 +34,9 @@ pub mod session;
 #[cfg(test)]
 mod tests {
     use crate::config::BrokerConfig;
-    use crate::control;
-    use crate::error::BrokerError;
     use crate::peer::{BrokerPeer, PeerRole};
     use crate::registry::ServiceRegistry;
-    use crate::session::{self, StitchResult};
+    use crate::session;
 
     use boringtun::noise::Tunn;
     use dashmap::DashMap;
@@ -105,12 +103,19 @@ mod tests {
             // Accept one connection and handle it
             let (stream, addr) = listener.accept().await.unwrap();
             let _ = crate::control::handle_connector_for_test(
-                stream, addr, ctrl_config, ctrl_peers, ctrl_registry, ctrl_audit, ctrl_revocation,
-            ).await;
+                stream,
+                addr,
+                ctrl_config,
+                ctrl_peers,
+                ctrl_registry,
+                ctrl_audit,
+                ctrl_revocation,
+            )
+            .await;
         });
 
         // Connect as a Connector
-        let mut stream = TcpStream::connect(control_addr).await.unwrap();
+        let stream = TcpStream::connect(control_addr).await.unwrap();
         let (reader, mut writer) = stream.into_split();
         let mut lines = BufReader::new(reader).lines();
 
@@ -120,7 +125,7 @@ mod tests {
 
         // Send Register
         let register = ControlMessage::Register {
-            public_key: base64::encode(&conn_pk),
+            public_key: base64::encode(conn_pk),
             pq_public_key: None,
             mldsa_signature: None,
             advertised_routes: vec!["10.1.0.0/16".to_string()],
@@ -218,12 +223,14 @@ mod tests {
             crl_path: Some(crl_path.to_string_lossy().to_string()),
             ..RevSecConfig::default()
         });
-        rev_engine.revoke_key(
-            &conn_pk,
-            Some("test-connector"),
-            dybervpn_tunnel::revocation::RevocationReason::Administrative,
-            Some("test"),
-        ).unwrap();
+        rev_engine
+            .revoke_key(
+                &conn_pk,
+                Some("test-connector"),
+                dybervpn_tunnel::revocation::RevocationReason::Administrative,
+                Some("test"),
+            )
+            .unwrap();
         let revocation = Arc::new(rev_engine);
 
         // Bind TCP listener
@@ -244,8 +251,15 @@ mod tests {
         tokio::spawn(async move {
             let (stream, addr) = listener.accept().await.unwrap();
             let _ = crate::control::handle_connector_for_test(
-                stream, addr, ctrl_config, ctrl_peers, ctrl_registry, ctrl_audit, ctrl_revocation,
-            ).await;
+                stream,
+                addr,
+                ctrl_config,
+                ctrl_peers,
+                ctrl_registry,
+                ctrl_audit,
+                ctrl_revocation,
+            )
+            .await;
         });
 
         // Connect and try to register with the revoked key
@@ -254,7 +268,7 @@ mod tests {
         let mut lines = BufReader::new(reader).lines();
 
         let register = ControlMessage::Register {
-            public_key: base64::encode(&conn_pk),
+            public_key: base64::encode(conn_pk),
             pq_public_key: None,
             mldsa_signature: None,
             advertised_routes: vec!["10.2.0.0/16".to_string()],
@@ -298,22 +312,14 @@ mod tests {
         let (client_secret, client_public) = gen_keypair();
 
         // Create Client's Tunn (talking to Broker)
-        let mut client_tunn = Tunn::new(
-            client_secret,
-            broker_public,
-            None, Some(25), 0, None,
-        );
+        let mut client_tunn = Tunn::new(client_secret, broker_public, None, Some(25), 0, None);
 
         // Create Broker's Tunn for this Client
-        let mut broker_tunn = Tunn::new(
-            broker_secret,
-            client_public,
-            None, Some(25), 1, None,
-        );
+        let mut broker_tunn = Tunn::new(broker_secret, client_public, None, Some(25), 1, None);
 
         // Client initiates handshake
         let mut init_buf = vec![0u8; 65535];
-        let mut timer_buf = vec![0u8; 65535];
+        let _timer_buf = vec![0u8; 65535];
 
         // Force a handshake initiation from client
         let handshake = client_tunn.format_handshake_initiation(&mut init_buf, false);
@@ -355,8 +361,8 @@ mod tests {
             role: Vec::new(),
         });
 
-        let (broker_secret, broker_public) = gen_keypair();
-        let (client_secret, client_public) = gen_keypair();
+        let (broker_secret, _broker_public) = gen_keypair();
+        let (_client_secret, client_public) = gen_keypair();
         let (_, connector_public) = gen_keypair();
 
         let broker_secret_clone = StaticSecret::from(broker_secret.to_bytes());
@@ -365,14 +371,20 @@ mod tests {
         let client_side_tunn = Tunn::new(
             StaticSecret::from(broker_secret.to_bytes()),
             client_public,
-            None, Some(25), 0, None,
+            None,
+            Some(25),
+            0,
+            None,
         );
 
         // Create Broker's Tunn for Connector side
         let connector_side_tunn = Tunn::new(
             broker_secret_clone,
             connector_public,
-            None, Some(25), 1, None,
+            None,
+            Some(25),
+            1,
+            None,
         );
 
         let mut src_peer = BrokerPeer::new(
@@ -415,40 +427,49 @@ mod tests {
 
         // Connector A serves 10.0.0.0/8 (broad)
         let key_a = [0xAA; 32];
-        registry.register(key_a, &[
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8),
-        ]);
+        registry.register(key_a, &[(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8)]);
 
         // Connector B serves 10.1.0.0/16 (more specific)
         let key_b = [0xBB; 32];
-        registry.register(key_b, &[
-            (IpAddr::V4(Ipv4Addr::new(10, 1, 0, 0)), 16),
-        ]);
+        registry.register(key_b, &[(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 0)), 16)]);
 
         // Connector C serves 172.16.0.0/12
         let key_c = [0xCC; 32];
-        registry.register(key_c, &[
-            (IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0)), 12),
-        ]);
+        registry.register(key_c, &[(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0)), 12)]);
 
         assert_eq!(registry.connector_count(), 3);
         assert_eq!(registry.route_count(), 3);
 
         // 10.1.0.5 → Connector B (longest prefix match)
-        assert_eq!(registry.lookup(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 5))), Some(key_b));
+        assert_eq!(
+            registry.lookup(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 5))),
+            Some(key_b)
+        );
 
         // 10.2.0.5 → Connector A (only /8 matches)
-        assert_eq!(registry.lookup(IpAddr::V4(Ipv4Addr::new(10, 2, 0, 5))), Some(key_a));
+        assert_eq!(
+            registry.lookup(IpAddr::V4(Ipv4Addr::new(10, 2, 0, 5))),
+            Some(key_a)
+        );
 
         // 172.16.5.1 → Connector C
-        assert_eq!(registry.lookup(IpAddr::V4(Ipv4Addr::new(172, 16, 5, 1))), Some(key_c));
+        assert_eq!(
+            registry.lookup(IpAddr::V4(Ipv4Addr::new(172, 16, 5, 1))),
+            Some(key_c)
+        );
 
         // 192.168.1.1 → None
-        assert_eq!(registry.lookup(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))), None);
+        assert_eq!(
+            registry.lookup(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+            None
+        );
 
         // Unregister Connector B, 10.1.0.5 should now resolve to A
         registry.unregister(&key_b);
-        assert_eq!(registry.lookup(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 5))), Some(key_a));
+        assert_eq!(
+            registry.lookup(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 5))),
+            Some(key_a)
+        );
         assert_eq!(registry.connector_count(), 2);
     }
 
@@ -457,11 +478,7 @@ mod tests {
     #[test]
     fn test_peer_idle_detection() {
         let (secret, public) = gen_keypair();
-        let tunn = Tunn::new(
-            secret,
-            public,
-            None, Some(25), 0, None,
-        );
+        let tunn = Tunn::new(secret, public, None, Some(25), 0, None);
 
         let mut peer = BrokerPeer::new(
             tunn,
@@ -477,8 +494,9 @@ mod tests {
         peer.touch();
         assert!(!peer.is_idle(std::time::Duration::from_secs(60)));
 
-        // With zero timeout, everything is idle
-        assert!(peer.is_idle(std::time::Duration::from_secs(0)));
+        // With a very short timeout after a small sleep, should be idle
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(peer.is_idle(std::time::Duration::from_millis(1)));
 
         // Short ID should be 4 bytes hex
         assert_eq!(peer.short_id().len(), 8);

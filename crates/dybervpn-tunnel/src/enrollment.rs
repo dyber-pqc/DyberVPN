@@ -22,13 +22,13 @@
 //!       -d '{"name": "laptop", "public_key": "base64...", "pq_public_key": "base64..."}'
 
 use std::collections::HashMap;
-use std::io::{Read, Write, BufRead, BufReader};
-use std::net::{TcpListener, TcpStream, SocketAddr, IpAddr};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Enrollment request from client
 #[derive(Debug, Deserialize)]
@@ -103,10 +103,7 @@ impl EnrollmentServer {
     pub fn run(&mut self) {
         let listener = match TcpListener::bind(self.config.listen_addr) {
             Ok(l) => {
-                tracing::info!(
-                    "Enrollment API listening on {}",
-                    self.config.listen_addr
-                );
+                tracing::info!("Enrollment API listening on {}", self.config.listen_addr);
                 l
             }
             Err(e) => {
@@ -141,14 +138,17 @@ impl EnrollmentServer {
 
     /// Handle a single HTTP connection
     fn handle_connection(&mut self, mut stream: TcpStream, addr: SocketAddr) -> Result<(), String> {
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .map_err(|e| format!("set timeout: {}", e))?;
 
         let mut reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
 
         // Read request line
         let mut request_line = String::new();
-        reader.read_line(&mut request_line).map_err(|e| e.to_string())?;
+        reader
+            .read_line(&mut request_line)
+            .map_err(|e| e.to_string())?;
         let request_line = request_line.trim().to_string();
 
         // Parse headers
@@ -202,7 +202,11 @@ impl EnrollmentServer {
 
         // Read body
         if content_length == 0 || content_length > 1_000_000 {
-            return self.send_response(stream, 400, r#"{"success":false,"error":"invalid content length"}"#);
+            return self.send_response(
+                stream,
+                400,
+                r#"{"success":false,"error":"invalid content length"}"#,
+            );
         }
 
         let mut body = vec![0u8; content_length];
@@ -222,16 +226,30 @@ impl EnrollmentServer {
 
         // Validate
         if request.name.is_empty() || request.name.len() > 64 {
-            return self.send_response(stream, 400, r#"{"success":false,"error":"name must be 1-64 chars"}"#);
+            return self.send_response(
+                stream,
+                400,
+                r#"{"success":false,"error":"name must be 1-64 chars"}"#,
+            );
         }
         if request.public_key.is_empty() {
-            return self.send_response(stream, 400, r#"{"success":false,"error":"public_key required"}"#);
+            return self.send_response(
+                stream,
+                400,
+                r#"{"success":false,"error":"public_key required"}"#,
+            );
         }
 
         // Check for duplicate name
         if self.enrolled_names.contains(&request.name) {
-            return self.send_response(stream, 409, 
-                &format!(r#"{{"success":false,"error":"peer '{}' already enrolled"}}"#, request.name));
+            return self.send_response(
+                stream,
+                409,
+                &format!(
+                    r#"{{"success":false,"error":"peer '{}' already enrolled"}}"#,
+                    request.name
+                ),
+            );
         }
 
         tracing::info!("Enrollment request: name='{}' from {}", request.name, addr);
@@ -240,33 +258,38 @@ impl EnrollmentServer {
         let server_config_str = std::fs::read_to_string(&self.config.server_config_path)
             .map_err(|e| format!("read config: {}", e))?;
 
-        let server_config: dybervpn_protocol::Config = toml::from_str(&server_config_str)
-            .map_err(|e| format!("parse config: {}", e))?;
+        let server_config: dybervpn_protocol::Config =
+            toml::from_str(&server_config_str).map_err(|e| format!("parse config: {}", e))?;
 
         // Calculate next available IP
-        let (server_ip, prefix) = parse_cidr_simple(&server_config.interface.address)
-            .ok_or("invalid server address")?;
+        let (server_ip, prefix) =
+            parse_cidr_simple(&server_config.interface.address).ok_or("invalid server address")?;
 
         let server_octets = match server_ip {
             IpAddr::V4(v4) => v4.octets(),
             _ => return Err("only IPv4 supported".into()),
         };
 
-        let existing_ips: Vec<u8> = server_config.peer.iter()
+        let existing_ips: Vec<u8> = server_config
+            .peer
+            .iter()
             .filter_map(|p| {
-                parse_cidr_simple(&p.allowed_ips)
-                    .and_then(|(ip, _)| match ip {
-                        IpAddr::V4(v4) => Some(v4.octets()[3]),
-                        _ => None,
-                    })
+                parse_cidr_simple(&p.allowed_ips).and_then(|(ip, _)| match ip {
+                    IpAddr::V4(v4) => Some(v4.octets()[3]),
+                    _ => None,
+                })
             })
             .collect();
 
         let mut next_octet = server_octets[3] + 1;
         while existing_ips.contains(&next_octet) || next_octet == 0 || next_octet == 255 {
             next_octet += 1;
-            if next_octet >= 255 {
-                return self.send_response(stream, 507, r#"{"success":false,"error":"no free IPs"}"#);
+            if next_octet == 255 {
+                return self.send_response(
+                    stream,
+                    507,
+                    r#"{"success":false,"error":"no free IPs"}"#,
+                );
             }
         }
 
@@ -283,21 +306,27 @@ impl EnrollmentServer {
         let server_priv_bytes = base64::decode(&server_config.interface.private_key)
             .map_err(|_| "invalid server private key")?;
         let mut sk_arr = [0u8; 32];
-        if server_priv_bytes.len() != 32 { return Err("bad server key len".into()); }
+        if server_priv_bytes.len() != 32 {
+            return Err("bad server key len".into());
+        }
         sk_arr.copy_from_slice(&server_priv_bytes);
         let server_secret = x25519_dalek::StaticSecret::from(sk_arr);
         let server_public = x25519_dalek::PublicKey::from(&server_secret);
         let server_public_b64 = base64::encode(server_public.as_bytes());
 
-        let server_pq_public_b64 = server_config.interface.pq_private_key.as_ref()
-            .and_then(|pq_priv| {
-                let bytes = base64::decode(pq_priv).ok()?;
-                if bytes.len() >= 2400 {
-                    Some(base64::encode(&bytes[bytes.len() - 1184..]))
-                } else {
-                    None
-                }
-            });
+        let server_pq_public_b64 =
+            server_config
+                .interface
+                .pq_private_key
+                .as_ref()
+                .and_then(|pq_priv| {
+                    let bytes = base64::decode(pq_priv).ok()?;
+                    if bytes.len() >= 2400 {
+                        Some(base64::encode(&bytes[bytes.len() - 1184..]))
+                    } else {
+                        None
+                    }
+                });
 
         // Build [[peer]] block for server config
         let mode_str = format!("{:?}", server_config.interface.mode).to_lowercase();
@@ -359,8 +388,7 @@ impl EnrollmentServer {
 
         client_config.push_str(&format!(
             "allowed_ips = \"{}\"\nendpoint = \"{}\"\npersistent_keepalive = 25\n",
-            subnet,
-            self.config.server_endpoint,
+            subnet, self.config.server_endpoint,
         ));
 
         // Signal daemon to reload
@@ -378,8 +406,8 @@ impl EnrollmentServer {
             error: None,
         };
 
-        let json = serde_json::to_string_pretty(&response)
-            .map_err(|e| format!("serialize: {}", e))?;
+        let json =
+            serde_json::to_string_pretty(&response).map_err(|e| format!("serialize: {}", e))?;
 
         tracing::info!(
             "Enrolled peer '{}' with IP {} (requested from {})",
@@ -431,10 +459,15 @@ impl EnrollmentServer {
              Connection: close\r\n\
              \r\n\
              {}",
-            status, status_text, body.len(), body
+            status,
+            status_text,
+            body.len(),
+            body
         );
 
-        stream.write_all(response.as_bytes()).map_err(|e| e.to_string())?;
+        stream
+            .write_all(response.as_bytes())
+            .map_err(|e| e.to_string())?;
         stream.flush().map_err(|e| e.to_string())?;
 
         Ok(())
@@ -525,14 +558,25 @@ mod tests {
     }
 
     /// Send a raw HTTP request to the enrollment server
-    fn http_request(addr: SocketAddr, method: &str, path: &str, token: Option<&str>, body: Option<&str>) -> (u16, String) {
+    fn http_request(
+        addr: SocketAddr,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<&str>,
+    ) -> (u16, String) {
         let mut stream = TcpStream::connect(addr).expect("connect to enrollment server");
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
 
         let body_bytes = body.unwrap_or("");
         let mut request = format!(
             "{} {} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\n",
-            method, path, addr, body_bytes.len(),
+            method,
+            path,
+            addr,
+            body_bytes.len(),
         );
         if let Some(t) = token {
             request.push_str(&format!("Authorization: Bearer {}\r\n", t));
@@ -547,16 +591,15 @@ mod tests {
         stream.read_to_string(&mut response).ok();
 
         // Parse status code
-        let status = response.lines().next()
+        let status = response
+            .lines()
+            .next()
             .and_then(|line| line.split_whitespace().nth(1))
             .and_then(|s| s.parse().ok())
             .unwrap_or(0u16);
 
         // Extract body (after \r\n\r\n)
-        let body = response.split("\r\n\r\n")
-            .nth(1)
-            .unwrap_or("")
-            .to_string();
+        let body = response.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
 
         (status, body)
     }
@@ -652,26 +695,48 @@ mod tests {
             r#"{{"name":"test-laptop","public_key":"{}"}}"#,
             client_public_b64,
         );
-        let (status, resp_body) = http_request(addr, "POST", "/enroll", Some(token), Some(&enroll_body));
+        let (status, resp_body) =
+            http_request(addr, "POST", "/enroll", Some(token), Some(&enroll_body));
         assert_eq!(status, 200, "enrollment should succeed, got: {}", resp_body);
 
-        let resp: EnrollResponse = serde_json::from_str(&resp_body)
-            .expect("enrollment response should be valid JSON");
+        let resp: EnrollResponse =
+            serde_json::from_str(&resp_body).expect("enrollment response should be valid JSON");
         assert!(resp.success, "enrollment should be successful");
         assert_eq!(resp.assigned_ip, "10.200.200.2", "first client gets .2");
-        assert!(!resp.server_public_key.is_empty(), "server public key should be present");
+        assert!(
+            !resp.server_public_key.is_empty(),
+            "server public key should be present"
+        );
         assert_eq!(resp.mode, "classic");
-        assert!(resp.client_config.contains("test-laptop"), "config should contain peer name");
-        assert!(resp.client_config.contains("10.200.200.2"), "config should contain assigned IP");
+        assert!(
+            resp.client_config.contains("test-laptop"),
+            "config should contain peer name"
+        );
+        assert!(
+            resp.client_config.contains("10.200.200.2"),
+            "config should contain assigned IP"
+        );
 
         // Verify reload flag was set
-        assert!(reload_flag.load(Ordering::Relaxed), "reload flag should be set after enrollment");
+        assert!(
+            reload_flag.load(Ordering::Relaxed),
+            "reload flag should be set after enrollment"
+        );
 
         // Verify peer was appended to server config file
         let updated_config = std::fs::read_to_string(&config_path).unwrap();
-        assert!(updated_config.contains(&client_public_b64), "server config should contain client key");
-        assert!(updated_config.contains("test-laptop"), "server config should contain peer name");
-        assert!(updated_config.contains("10.200.200.2/32"), "server config should contain assigned IP");
+        assert!(
+            updated_config.contains(&client_public_b64),
+            "server config should contain client key"
+        );
+        assert!(
+            updated_config.contains("test-laptop"),
+            "server config should contain peer name"
+        );
+        assert!(
+            updated_config.contains("10.200.200.2/32"),
+            "server config should contain assigned IP"
+        );
 
         // Enroll a second peer — should get .3
         let client2_secret = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
@@ -681,19 +746,25 @@ mod tests {
             r#"{{"name":"test-phone","public_key":"{}"}}"#,
             client2_public_b64,
         );
-        let (status2, resp_body2) = http_request(addr, "POST", "/enroll", Some(token), Some(&enroll_body2));
+        let (status2, resp_body2) =
+            http_request(addr, "POST", "/enroll", Some(token), Some(&enroll_body2));
         assert_eq!(status2, 200);
         let resp2: EnrollResponse = serde_json::from_str(&resp_body2).unwrap();
         assert_eq!(resp2.assigned_ip, "10.200.200.3", "second client gets .3");
 
         // Duplicate name → 409
-        let (status_dup, _) = http_request(addr, "POST", "/enroll", Some(token), Some(&enroll_body));
+        let (status_dup, _) =
+            http_request(addr, "POST", "/enroll", Some(token), Some(&enroll_body));
         assert_eq!(status_dup, 409, "duplicate name should be 409");
 
         // GET /status should show 2 enrolled peers
         let (status_s, status_body) = http_request(addr, "GET", "/status", Some(token), None);
         assert_eq!(status_s, 200);
-        assert!(status_body.contains("\"enrolled_peers\":2"), "status: {}", status_body);
+        assert!(
+            status_body.contains("\"enrolled_peers\":2"),
+            "status: {}",
+            status_body
+        );
 
         shutdown.store(true, Ordering::Relaxed);
         handle.join().ok();
@@ -716,18 +787,33 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(300));
 
         // Empty name → 400
-        let (status, _) = http_request(addr, "POST", "/enroll", Some(token),
-            Some(r#"{"name":"","public_key":"dGVzdA=="}"#));
+        let (status, _) = http_request(
+            addr,
+            "POST",
+            "/enroll",
+            Some(token),
+            Some(r#"{"name":"","public_key":"dGVzdA=="}"#),
+        );
         assert_eq!(status, 400);
 
         // Missing public_key → 400
-        let (status, _) = http_request(addr, "POST", "/enroll", Some(token),
-            Some(r#"{"name":"test","public_key":""}"#));
+        let (status, _) = http_request(
+            addr,
+            "POST",
+            "/enroll",
+            Some(token),
+            Some(r#"{"name":"test","public_key":""}"#),
+        );
         assert_eq!(status, 400);
 
         // Invalid JSON → 400
-        let (status, _) = http_request(addr, "POST", "/enroll", Some(token),
-            Some(r#"not json at all"#));
+        let (status, _) = http_request(
+            addr,
+            "POST",
+            "/enroll",
+            Some(token),
+            Some(r#"not json at all"#),
+        );
         assert_eq!(status, 400);
 
         shutdown.store(true, Ordering::Relaxed);

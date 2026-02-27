@@ -28,41 +28,43 @@ impl WindowsTun {
             wintun::load()
                 .map_err(|e| TunnelError::DeviceCreation(format!("Failed to load WinTUN: {}", e)))?
         };
-        
+
         // Create or open adapter - these return Arc<Adapter> directly
         let adapter: Arc<Adapter> = match Adapter::open(&wintun, name) {
             Ok(adapter) => adapter,
-            Err(_) => {
-                Adapter::create(&wintun, name, "DyberVPN", None)
-                    .map_err(|e| TunnelError::DeviceCreation(format!("Failed to create adapter: {}", e)))?
-            }
+            Err(_) => Adapter::create(&wintun, name, "DyberVPN", None).map_err(|e| {
+                TunnelError::DeviceCreation(format!("Failed to create adapter: {}", e))
+            })?,
         };
-        
+
         // Start session with ring buffer
         let session = adapter
             .start_session(wintun::MAX_RING_CAPACITY)
             .map_err(|e| TunnelError::DeviceCreation(format!("Failed to start session: {}", e)))?;
-        
+
         Ok(Self {
             name: name.to_string(),
             adapter,
             session: Arc::new(session),
         })
     }
-    
+
     /// Set the device IP address
     pub fn set_address(&self, addr: IpAddr, prefix: u8) -> TunnelResult<()> {
         use std::process::Command;
-        
+
         let addr_str = addr.to_string();
-        
+
         match addr {
             IpAddr::V4(_) => {
                 let mask = prefix_to_mask_v4(prefix);
-                
+
                 Command::new("netsh")
                     .args([
-                        "interface", "ip", "set", "address",
+                        "interface",
+                        "ip",
+                        "set",
+                        "address",
                         &format!("name=\"{}\"", self.name),
                         "source=static",
                         &format!("addr={}", addr_str),
@@ -74,7 +76,10 @@ impl WindowsTun {
             IpAddr::V6(_) => {
                 Command::new("netsh")
                     .args([
-                        "interface", "ipv6", "add", "address",
+                        "interface",
+                        "ipv6",
+                        "add",
+                        "address",
                         &format!("interface=\"{}\"", self.name),
                         &format!("address={}/{}", addr_str, prefix),
                     ])
@@ -82,37 +87,40 @@ impl WindowsTun {
                     .map_err(|e| TunnelError::Config(format!("Failed to set address: {}", e)))?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Set the MTU
     pub fn set_mtu(&self, mtu: u16) -> TunnelResult<()> {
         use std::process::Command;
-        
+
         Command::new("netsh")
             .args([
-                "interface", "ipv4", "set", "subinterface",
+                "interface",
+                "ipv4",
+                "set",
+                "subinterface",
                 &self.name,
                 &format!("mtu={}", mtu),
                 "store=persistent",
             ])
             .output()
             .map_err(|e| TunnelError::Config(format!("Failed to set MTU: {}", e)))?;
-        
+
         Ok(())
     }
-    
+
     /// Bring the device up
     pub fn up(&self) -> TunnelResult<()> {
         Ok(())
     }
-    
+
     /// Bring the device down
     pub fn down(&self) -> TunnelResult<()> {
         Ok(())
     }
-    
+
     /// Read a packet from the device (blocking)
     pub fn read(&self, buf: &mut [u8]) -> TunnelResult<usize> {
         match self.session.receive_blocking() {
@@ -122,25 +130,28 @@ impl WindowsTun {
                 buf[..len].copy_from_slice(&bytes[..len]);
                 Ok(len)
             }
-            Err(e) => Err(TunnelError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to receive packet: {}", e)
-            ))),
+            Err(e) => Err(TunnelError::Io(std::io::Error::other(format!(
+                "Failed to receive packet: {}",
+                e
+            )))),
         }
     }
-    
+
     /// Write a packet to the device
     pub fn write(&self, buf: &[u8]) -> TunnelResult<usize> {
-        let mut packet = self.session
+        let mut packet = self
+            .session
             .allocate_send_packet(buf.len() as u16)
-            .map_err(|e| TunnelError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to allocate packet: {}", e)
-            )))?;
-        
+            .map_err(|e| {
+                TunnelError::Io(std::io::Error::other(format!(
+                    "Failed to allocate packet: {}",
+                    e
+                )))
+            })?;
+
         packet.bytes_mut().copy_from_slice(buf);
         self.session.send_packet(packet);
-        
+
         Ok(buf.len())
     }
 }
@@ -152,7 +163,7 @@ fn prefix_to_mask_v4(prefix: u8) -> String {
     } else {
         !0u32 << (32 - prefix)
     };
-    
+
     format!(
         "{}.{}.{}.{}",
         (mask >> 24) & 0xFF,

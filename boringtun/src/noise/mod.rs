@@ -47,16 +47,25 @@ const N_SESSIONS: usize = 8;
 
 // Re-export hybrid handshake types
 pub use hybrid_handshake::{
-    HybridHandshakeState, MlDsaKeyPair, PqKeyPair,
+    HybridHandshakeState,
+    MlDsaKeyPair,
+    PqKeyPair,
     // Hybrid mode (ML-KEM only)
-    HANDSHAKE_INIT_PQ, HANDSHAKE_INIT_PQ_SZ,
-    HANDSHAKE_RESP_PQ, HANDSHAKE_RESP_PQ_SZ,
+    HANDSHAKE_INIT_PQ,
     // PQ-only mode (ML-KEM + ML-DSA auth)
-    HANDSHAKE_INIT_PQ_AUTH, HANDSHAKE_INIT_PQ_AUTH_SZ,
-    HANDSHAKE_RESP_PQ_AUTH, HANDSHAKE_RESP_PQ_AUTH_SZ,
+    HANDSHAKE_INIT_PQ_AUTH,
+    HANDSHAKE_INIT_PQ_AUTH_SZ,
+    HANDSHAKE_INIT_PQ_SZ,
+    HANDSHAKE_RESP_PQ,
+    HANDSHAKE_RESP_PQ_AUTH,
+    HANDSHAKE_RESP_PQ_AUTH_SZ,
+    HANDSHAKE_RESP_PQ_SZ,
+    MLDSA_PUBLIC_KEY_SIZE,
+    MLDSA_SECRET_KEY_SIZE,
+    MLDSA_SIGNATURE_SIZE,
     // Key/signature sizes
-    MLKEM_CIPHERTEXT_SIZE, MLKEM_PUBLIC_KEY_SIZE,
-    MLDSA_PUBLIC_KEY_SIZE, MLDSA_SECRET_KEY_SIZE, MLDSA_SIGNATURE_SIZE,
+    MLKEM_CIPHERTEXT_SIZE,
+    MLKEM_PUBLIC_KEY_SIZE,
 };
 
 #[derive(Debug)]
@@ -191,23 +200,23 @@ impl Tunn {
                 encrypted_encapsulated_packet: &src[16..],
             }),
             // PQ handshake messages (hybrid mode - ML-KEM only)
-            (HANDSHAKE_INIT_PQ, HANDSHAKE_INIT_PQ_SZ) => {
-                Packet::HandshakeInitPq(hybrid_handshake::HandshakeInitPq::parse(src)
-                    .map_err(|_| WireGuardError::InvalidPacket)?)
-            }
-            (HANDSHAKE_RESP_PQ, HANDSHAKE_RESP_PQ_SZ) => {
-                Packet::HandshakeResponsePq(hybrid_handshake::HandshakeResponsePq::parse(src)
-                    .map_err(|_| WireGuardError::InvalidPacket)?)
-            }
+            (HANDSHAKE_INIT_PQ, HANDSHAKE_INIT_PQ_SZ) => Packet::HandshakeInitPq(
+                hybrid_handshake::HandshakeInitPq::parse(src)
+                    .map_err(|_| WireGuardError::InvalidPacket)?,
+            ),
+            (HANDSHAKE_RESP_PQ, HANDSHAKE_RESP_PQ_SZ) => Packet::HandshakeResponsePq(
+                hybrid_handshake::HandshakeResponsePq::parse(src)
+                    .map_err(|_| WireGuardError::InvalidPacket)?,
+            ),
             // PQ-only handshake messages (ML-KEM + ML-DSA auth)
-            (HANDSHAKE_INIT_PQ_AUTH, HANDSHAKE_INIT_PQ_AUTH_SZ) => {
-                Packet::HandshakeInitPqAuth(hybrid_handshake::HandshakeInitPqAuth::parse(src)
-                    .map_err(|_| WireGuardError::InvalidPacket)?)
-            }
-            (HANDSHAKE_RESP_PQ_AUTH, HANDSHAKE_RESP_PQ_AUTH_SZ) => {
-                Packet::HandshakeResponsePqAuth(hybrid_handshake::HandshakeResponsePqAuth::parse(src)
-                    .map_err(|_| WireGuardError::InvalidPacket)?)
-            }
+            (HANDSHAKE_INIT_PQ_AUTH, HANDSHAKE_INIT_PQ_AUTH_SZ) => Packet::HandshakeInitPqAuth(
+                hybrid_handshake::HandshakeInitPqAuth::parse(src)
+                    .map_err(|_| WireGuardError::InvalidPacket)?,
+            ),
+            (HANDSHAKE_RESP_PQ_AUTH, HANDSHAKE_RESP_PQ_AUTH_SZ) => Packet::HandshakeResponsePqAuth(
+                hybrid_handshake::HandshakeResponsePqAuth::parse(src)
+                    .map_err(|_| WireGuardError::InvalidPacket)?,
+            ),
             _ => return Err(WireGuardError::InvalidPacket),
         })
     }
@@ -314,8 +323,8 @@ impl Tunn {
 
     /// Check if PQ-only authentication is enabled and keys are configured
     pub fn is_pq_auth_ready(&self) -> bool {
-        self.mode.uses_pq_auth() 
-            && self.mldsa_keypair.is_some() 
+        self.mode.uses_pq_auth()
+            && self.mldsa_keypair.is_some()
             && self.peer_mldsa_public_key.is_some()
     }
 
@@ -476,14 +485,14 @@ impl Tunn {
 
         // Get classical response - copy to temp buffer to avoid borrow issues
         let mut temp_buf = [0u8; HANDSHAKE_RESP_SZ];
-        let (classic_packet, mut session) = self.handshake.receive_handshake_initialization(classic_init, dst)?;
+        let (classic_packet, mut session) = self
+            .handshake
+            .receive_handshake_initialization(classic_init, dst)?;
         temp_buf.copy_from_slice(classic_packet);
 
         // Now handle PQ part: encapsulate to initiator's ephemeral PQ public key
-        let pq_responder = hybrid_integration::HybridResponderState::new(
-            self.mode,
-            p.pq_ephemeral_public,
-        )?;
+        let pq_responder =
+            hybrid_integration::HybridResponderState::new(self.mode, p.pq_ephemeral_public)?;
 
         // Derive hybrid session keys
         // Note: For responder, we swap the keys - our sending key is initiator's receiving key
@@ -501,7 +510,8 @@ impl Tunn {
             &temp_buf,
             &pq_responder.pq_ciphertext,
             dst,
-        ).map_err(|_| WireGuardError::DestinationBufferTooSmall)?;
+        )
+        .map_err(|_| WireGuardError::DestinationBufferTooSmall)?;
 
         // Store new session in ring buffer
         let index = session.local_index();
@@ -610,7 +620,7 @@ impl Tunn {
     }
 
     /// Handle PQ-only handshake initiation with ML-DSA auth (responder side)
-    /// 
+    ///
     /// This is similar to handle_handshake_init_pq but additionally:
     /// 1. Verifies the initiator's ML-DSA signature over the handshake transcript
     /// 2. Includes our ML-DSA signature in the response
@@ -626,7 +636,9 @@ impl Tunn {
 
         // Check if we have ML-DSA keys configured for verification
         if !self.is_pq_auth_ready() {
-            tracing::warn!("Received PQ-auth init but ML-DSA keys not configured - falling back to hybrid");
+            tracing::warn!(
+                "Received PQ-auth init but ML-DSA keys not configured - falling back to hybrid"
+            );
             // Fall back to treating it like a regular PQ init (without auth verification)
             let pq_init = hybrid_handshake::HandshakeInitPq {
                 sender_idx: p.sender_idx,
@@ -640,12 +652,12 @@ impl Tunn {
 
         // Step 1: Build the transcript that was signed by the initiator
         // The initiator signed: classic_init (148 bytes, with type=1 and actual MACs) + pq_ephemeral_pk
-        // 
+        //
         // IMPORTANT: The initiator signs dst[..148] which includes:
         // - type (4 bytes) = 1 (HANDSHAKE_INIT)
         // - sender_idx (4 bytes)
         // - unencrypted_ephemeral (32 bytes)
-        // - encrypted_static (48 bytes)  
+        // - encrypted_static (48 bytes)
         // - encrypted_timestamp (28 bytes)
         // - mac1 (16 bytes) - actual computed MACs
         // - mac2 (16 bytes) - actual computed MACs (or zeros)
@@ -675,23 +687,23 @@ impl Tunn {
 
         // Step 2: Verify the initiator's ML-DSA signature
         let peer_mldsa_pk = self.peer_mldsa_public_key.as_ref().unwrap();
-        let signature = dybervpn_protocol::MlDsaSignature::from_bytes(p.mldsa_signature)
-            .map_err(|_| {
+        let signature =
+            dybervpn_protocol::MlDsaSignature::from_bytes(p.mldsa_signature).map_err(|_| {
                 tracing::error!("Invalid ML-DSA signature format in PQ-auth init");
                 WireGuardError::InvalidPacket
             })?;
-        
+
         let valid = hybrid_handshake::mldsa_verify(peer_mldsa_pk, &init_transcript, &signature)
             .map_err(|e| {
                 tracing::error!("ML-DSA verification failed: {}", e);
                 WireGuardError::InvalidPacket
             })?;
-        
+
         if !valid {
             tracing::error!("ML-DSA signature verification failed - rejecting PQ-auth init");
             return Err(WireGuardError::InvalidPacket);
         }
-        
+
         tracing::info!("ML-DSA signature verified for PQ-auth init");
 
         // Step 3: Process the classical part of the handshake
@@ -703,14 +715,14 @@ impl Tunn {
         };
 
         let mut temp_buf = [0u8; HANDSHAKE_RESP_SZ];
-        let (classic_packet, mut session) = self.handshake.receive_handshake_initialization(classic_init, dst)?;
+        let (classic_packet, mut session) = self
+            .handshake
+            .receive_handshake_initialization(classic_init, dst)?;
         temp_buf.copy_from_slice(classic_packet);
 
         // Step 4: Handle PQ part - encapsulate to initiator's ephemeral PQ public key
-        let pq_responder = hybrid_integration::HybridResponderState::new(
-            self.mode,
-            p.pq_ephemeral_public,
-        )?;
+        let pq_responder =
+            hybrid_integration::HybridResponderState::new(self.mode, p.pq_ephemeral_public)?;
 
         // Derive hybrid session keys
         let (initiator_send, initiator_recv) = hybrid_integration::derive_hybrid_session_keys(
@@ -727,8 +739,11 @@ impl Tunn {
         response_transcript.extend_from_slice(&temp_buf[..60]); // Everything before MACs
         response_transcript.extend_from_slice(&[0u8; 32]); // Zero MACs
         response_transcript.extend_from_slice(&pq_responder.pq_ciphertext);
-        
-        let our_signature = self.mldsa_keypair.as_ref().unwrap()
+
+        let our_signature = self
+            .mldsa_keypair
+            .as_ref()
+            .unwrap()
             .sign(&response_transcript)
             .map_err(|e| {
                 tracing::error!("Failed to sign PQ-auth response: {}", e);
@@ -741,7 +756,8 @@ impl Tunn {
             &pq_responder.pq_ciphertext,
             our_signature.as_bytes(),
             dst,
-        ).map_err(|_| WireGuardError::DestinationBufferTooSmall)?;
+        )
+        .map_err(|_| WireGuardError::DestinationBufferTooSmall)?;
 
         // Store new session
         let index = session.local_index();
@@ -778,7 +794,9 @@ impl Tunn {
 
         // Check if we have ML-DSA keys configured for verification
         if !self.is_pq_auth_ready() {
-            tracing::warn!("Received PQ-auth response but ML-DSA keys not configured - falling back to hybrid");
+            tracing::warn!(
+                "Received PQ-auth response but ML-DSA keys not configured - falling back to hybrid"
+            );
             let pq_resp = hybrid_handshake::HandshakeResponsePq {
                 sender_idx: p.sender_idx,
                 receiver_idx: p.receiver_idx,
@@ -791,16 +809,17 @@ impl Tunn {
 
         // We need access to our original init to build the transcript
         // The responder signed: init_transcript + classic_response + pq_ciphertext
-        let pq_state = self.pq_initiator_state.as_ref()
+        let pq_state = self
+            .pq_initiator_state
+            .as_ref()
             .ok_or(WireGuardError::UnexpectedPacket)?;
-        
+
         // Get the init message we sent from handshake state
-        let sent_init = self.handshake.get_sent_init()
-            .ok_or_else(|| {
-                tracing::error!("No sent init message stored for PQ-auth transcript");
-                WireGuardError::UnexpectedPacket
-            })?;
-        
+        let sent_init = self.handshake.get_sent_init().ok_or_else(|| {
+            tracing::error!("No sent init message stored for PQ-auth transcript");
+            WireGuardError::UnexpectedPacket
+        })?;
+
         // Build init_transcript = classic_init (148 bytes, with zeros for MACs) + pq_ephemeral_pk
         // IMPORTANT: Both sides use zeros for MAC bytes (116-148) in the transcript
         let mut init_transcript = Vec::with_capacity(148 + MLKEM_PUBLIC_KEY_SIZE);
@@ -827,23 +846,23 @@ impl Tunn {
 
         // Verify responder's signature
         let peer_mldsa_pk = self.peer_mldsa_public_key.as_ref().unwrap();
-        let signature = dybervpn_protocol::MlDsaSignature::from_bytes(p.mldsa_signature)
-            .map_err(|_| {
+        let signature =
+            dybervpn_protocol::MlDsaSignature::from_bytes(p.mldsa_signature).map_err(|_| {
                 tracing::error!("Invalid ML-DSA signature format in PQ-auth response");
                 WireGuardError::InvalidPacket
             })?;
-        
+
         let valid = hybrid_handshake::mldsa_verify(peer_mldsa_pk, &response_transcript, &signature)
             .map_err(|e| {
                 tracing::error!("ML-DSA verification failed: {}", e);
                 WireGuardError::InvalidPacket
             })?;
-        
+
         if !valid {
             tracing::error!("ML-DSA signature verification failed - rejecting PQ-auth response");
             return Err(WireGuardError::InvalidPacket);
         }
-        
+
         tracing::info!("ML-DSA signature verified for PQ-auth response");
 
         // Process the classical part
@@ -988,43 +1007,47 @@ impl Tunn {
             Ok(classic_packet) => {
                 // Get the length of classic packet before any borrowing issues
                 let classic_len = classic_packet.len();
-                
+
                 // If hybrid/pq-only mode, append PQ public key (and signature for pq-only)
                 let final_len = if self.is_hybrid() {
                     if let Some(ref pq_state) = self.pq_initiator_state {
                         let pq_pk_bytes = &pq_state.pq_ephemeral_pk;
-                        
+
                         // Check if we're in PQ-only mode with ML-DSA keys configured
                         if self.is_pq_auth_ready() {
                             // PQ-only mode: include ML-DSA signature
                             // Build transcript: classic init (148 bytes, with zeros for MACs) + PQ public key
-                            // 
+                            //
                             // IMPORTANT: We sign with zeros for MAC bytes (116-148) so both sides can
-                            // reconstruct the same transcript. The responder doesn't have access to 
+                            // reconstruct the same transcript. The responder doesn't have access to
                             // our computed MACs, so both sides agree to use zeros in the transcript.
-                            let mut transcript = Vec::with_capacity(classic_len + pq_pk_bytes.len());
+                            let mut transcript =
+                                Vec::with_capacity(classic_len + pq_pk_bytes.len());
                             // Copy first 116 bytes (everything before MACs)
                             transcript.extend_from_slice(&dst[..116]);
                             // Use zeros for MAC1 + MAC2 (32 bytes)
                             transcript.extend_from_slice(&[0u8; 32]);
                             // Add PQ public key
                             transcript.extend_from_slice(pq_pk_bytes);
-                            
+
                             // Sign the transcript
-                            let signature = match self.mldsa_keypair.as_ref().unwrap().sign(&transcript) {
-                                Ok(sig) => sig,
-                                Err(e) => {
-                                    tracing::error!("Failed to sign handshake init: {}", e);
-                                    return TunnResult::Err(WireGuardError::InvalidPacket);
-                                }
-                            };
-                            
+                            let signature =
+                                match self.mldsa_keypair.as_ref().unwrap().sign(&transcript) {
+                                    Ok(sig) => sig,
+                                    Err(e) => {
+                                        tracing::error!("Failed to sign handshake init: {}", e);
+                                        return TunnResult::Err(WireGuardError::InvalidPacket);
+                                    }
+                                };
+
                             // Format PQ-auth init: classic + PQ public key + ML-DSA signature
                             dst[0..4].copy_from_slice(&HANDSHAKE_INIT_PQ_AUTH.to_le_bytes());
-                            dst[classic_len..classic_len + pq_pk_bytes.len()].copy_from_slice(pq_pk_bytes);
+                            dst[classic_len..classic_len + pq_pk_bytes.len()]
+                                .copy_from_slice(pq_pk_bytes);
                             let sig_start = classic_len + pq_pk_bytes.len();
-                            dst[sig_start..sig_start + MLDSA_SIGNATURE_SIZE].copy_from_slice(signature.as_bytes());
-                            
+                            dst[sig_start..sig_start + MLDSA_SIGNATURE_SIZE]
+                                .copy_from_slice(signature.as_bytes());
+
                             let total_len = HANDSHAKE_INIT_PQ_AUTH_SZ;
                             tracing::info!(
                                 message = "Sending PQ-auth handshake_initiation",
@@ -1035,8 +1058,9 @@ impl Tunn {
                         } else {
                             // Hybrid mode (or pq-only without keys): no ML-DSA signature
                             dst[0..4].copy_from_slice(&HANDSHAKE_INIT_PQ.to_le_bytes());
-                            dst[classic_len..classic_len + pq_pk_bytes.len()].copy_from_slice(pq_pk_bytes);
-                            
+                            dst[classic_len..classic_len + pq_pk_bytes.len()]
+                                .copy_from_slice(pq_pk_bytes);
+
                             let total_len = classic_len + pq_pk_bytes.len();
                             tracing::info!(
                                 message = "Sending PQ handshake_initiation",
@@ -1444,10 +1468,10 @@ mod tests {
     fn hybrid_handshake_init() {
         let (mut my_tun, _their_tun) = create_two_hybrid_tuns();
         let init = create_handshake_init(&mut my_tun);
-        
+
         // Should be a PQ init (larger than classic)
         assert_eq!(init.len(), HANDSHAKE_INIT_PQ_SZ);
-        
+
         let packet = Tunn::parse_incoming_packet(&init).unwrap();
         assert!(matches!(packet, Packet::HandshakeInitPq(_)));
     }
@@ -1455,18 +1479,18 @@ mod tests {
     #[test]
     fn hybrid_full_handshake() {
         let (mut my_tun, mut their_tun) = create_two_hybrid_tuns();
-        
+
         // Initiator sends PQ handshake init
         let init = create_handshake_init(&mut my_tun);
         assert_eq!(init.len(), HANDSHAKE_INIT_PQ_SZ);
-        
+
         // Responder processes and returns PQ response
         let resp = create_handshake_response(&mut their_tun, &init);
         assert_eq!(resp.len(), HANDSHAKE_RESP_PQ_SZ);
-        
+
         // Initiator processes response and sends keepalive
         let keepalive = parse_handshake_resp(&mut my_tun, &resp);
-        
+
         // Responder receives keepalive
         parse_keepalive(&mut their_tun, &keepalive);
     }
@@ -1474,13 +1498,13 @@ mod tests {
     #[test]
     fn hybrid_one_ip_packet() {
         let (mut my_tun, mut their_tun) = create_two_hybrid_tuns();
-        
+
         // Complete handshake
         let init = create_handshake_init(&mut my_tun);
         let resp = create_handshake_response(&mut their_tun, &init);
         let keepalive = parse_handshake_resp(&mut my_tun, &resp);
         parse_keepalive(&mut their_tun, &keepalive);
-        
+
         // Now send data
         let mut my_dst = [0u8; 1024];
         let mut their_dst = [0u8; 1024];
@@ -1505,10 +1529,10 @@ mod tests {
     }
 
     // PQ-Only mode tests (ML-KEM + ML-DSA authentication)
-    
+
     // Buffer size large enough for PQ-auth messages (init: 4641 bytes, resp: 4489 bytes)
     const PQONLY_BUF_SIZE: usize = 8192;
-    
+
     /// Helper for PQ-only handshake init (uses larger buffer)
     fn create_pqonly_handshake_init(tun: &mut Tunn) -> Vec<u8> {
         let mut dst = vec![0u8; PQONLY_BUF_SIZE];
@@ -1554,7 +1578,7 @@ mod tests {
         let keepalive = tun.decapsulate(None, keepalive, &mut dst);
         assert!(matches!(keepalive, TunnResult::Done));
     }
-    
+
     /// Create two tunnels configured for PQ-only mode with ML-DSA authentication
     fn create_two_pqonly_tuns() -> (Tunn, Tunn) {
         let my_secret_key = x25519_dalek::StaticSecret::random_from_rng(OsRng);
@@ -1567,8 +1591,9 @@ mod tests {
 
         // Generate ML-DSA keypairs for both parties
         let my_mldsa_keypair = MlDsaKeyPair::generate().expect("Failed to generate ML-DSA keypair");
-        let their_mldsa_keypair = MlDsaKeyPair::generate().expect("Failed to generate ML-DSA keypair");
-        
+        let their_mldsa_keypair =
+            MlDsaKeyPair::generate().expect("Failed to generate ML-DSA keypair");
+
         // Extract public keys for peer verification
         let my_mldsa_public = my_mldsa_keypair.public_key().clone();
         let their_mldsa_public = their_mldsa_keypair.public_key().clone();
@@ -1577,7 +1602,7 @@ mod tests {
         let mut my_hybrid_state = HybridHandshakeState::new(OperatingMode::PqOnly);
         my_hybrid_state.mldsa_keypair = Some(my_mldsa_keypair);
         my_hybrid_state.peer_mldsa_public_key = Some(their_mldsa_public);
-        
+
         let mut their_hybrid_state = HybridHandshakeState::new(OperatingMode::PqOnly);
         their_hybrid_state.mldsa_keypair = Some(their_mldsa_keypair);
         their_hybrid_state.peer_mldsa_public_key = Some(my_mldsa_public);
@@ -1621,10 +1646,10 @@ mod tests {
     fn pqonly_handshake_init() {
         let (mut my_tun, _their_tun) = create_two_pqonly_tuns();
         let init = create_pqonly_handshake_init(&mut my_tun);
-        
+
         // Should be a PQ-auth init (includes ML-DSA signature)
         assert_eq!(init.len(), HANDSHAKE_INIT_PQ_AUTH_SZ);
-        
+
         let packet = Tunn::parse_incoming_packet(&init).unwrap();
         assert!(matches!(packet, Packet::HandshakeInitPqAuth(_)));
     }
@@ -1632,18 +1657,26 @@ mod tests {
     #[test]
     fn pqonly_full_handshake() {
         let (mut my_tun, mut their_tun) = create_two_pqonly_tuns();
-        
+
         // Initiator sends PQ-auth handshake init (with ML-DSA signature)
         let init = create_pqonly_handshake_init(&mut my_tun);
-        assert_eq!(init.len(), HANDSHAKE_INIT_PQ_AUTH_SZ, "Init should include ML-DSA signature");
-        
+        assert_eq!(
+            init.len(),
+            HANDSHAKE_INIT_PQ_AUTH_SZ,
+            "Init should include ML-DSA signature"
+        );
+
         // Responder verifies signature and returns PQ-auth response
         let resp = create_pqonly_handshake_response(&mut their_tun, &init);
-        assert_eq!(resp.len(), HANDSHAKE_RESP_PQ_AUTH_SZ, "Response should include ML-DSA signature");
-        
+        assert_eq!(
+            resp.len(),
+            HANDSHAKE_RESP_PQ_AUTH_SZ,
+            "Response should include ML-DSA signature"
+        );
+
         // Initiator verifies responder's signature and completes handshake
         let keepalive = parse_pqonly_handshake_resp(&mut my_tun, &resp);
-        
+
         // Responder receives keepalive - handshake complete
         parse_pqonly_keepalive(&mut their_tun, &keepalive);
     }
@@ -1651,13 +1684,13 @@ mod tests {
     #[test]
     fn pqonly_one_ip_packet() {
         let (mut my_tun, mut their_tun) = create_two_pqonly_tuns();
-        
+
         // Complete PQ-auth handshake
         let init = create_pqonly_handshake_init(&mut my_tun);
         let resp = create_pqonly_handshake_response(&mut their_tun, &init);
         let keepalive = parse_pqonly_handshake_resp(&mut my_tun, &resp);
         parse_pqonly_keepalive(&mut their_tun, &keepalive);
-        
+
         // Now send data over the PQ-authenticated tunnel
         let mut my_dst = [0u8; 1024];
         let mut their_dst = [0u8; 1024];
@@ -1694,17 +1727,19 @@ mod tests {
 
         // Generate ML-DSA keypairs
         let my_mldsa_keypair = MlDsaKeyPair::generate().expect("Failed to generate ML-DSA keypair");
-        let their_mldsa_keypair = MlDsaKeyPair::generate().expect("Failed to generate ML-DSA keypair");
-        
+        let their_mldsa_keypair =
+            MlDsaKeyPair::generate().expect("Failed to generate ML-DSA keypair");
+
         // Generate a WRONG key for peer verification (attacker's key)
-        let wrong_mldsa_keypair = MlDsaKeyPair::generate().expect("Failed to generate ML-DSA keypair");
+        let wrong_mldsa_keypair =
+            MlDsaKeyPair::generate().expect("Failed to generate ML-DSA keypair");
         let wrong_mldsa_public = wrong_mldsa_keypair.public_key().clone();
 
         // My tunnel has correct keys
         let mut my_hybrid_state = HybridHandshakeState::new(OperatingMode::PqOnly);
         my_hybrid_state.mldsa_keypair = Some(my_mldsa_keypair);
         my_hybrid_state.peer_mldsa_public_key = Some(their_mldsa_keypair.public_key().clone());
-        
+
         // Their tunnel has WRONG peer public key (won't match my signature)
         let mut their_hybrid_state = HybridHandshakeState::new(OperatingMode::PqOnly);
         their_hybrid_state.mldsa_keypair = Some(their_mldsa_keypair);
@@ -1729,17 +1764,20 @@ mod tests {
             None,
             their_hybrid_state,
         );
-        
+
         // Initiator sends PQ-auth handshake init
         let init = create_pqonly_handshake_init(&mut my_tun);
         assert_eq!(init.len(), HANDSHAKE_INIT_PQ_AUTH_SZ);
-        
+
         // Responder should REJECT due to signature verification failure
         let mut dst = vec![0u8; PQONLY_BUF_SIZE];
         let result = their_tun.decapsulate(None, &init, &mut dst);
-        
+
         // Should fail with InvalidPacket error
-        assert!(matches!(result, TunnResult::Err(WireGuardError::InvalidPacket)),
-            "Expected InvalidPacket error for wrong signature, got {:?}", result);
+        assert!(
+            matches!(result, TunnResult::Err(WireGuardError::InvalidPacket)),
+            "Expected InvalidPacket error for wrong signature, got {:?}",
+            result
+        );
     }
 }

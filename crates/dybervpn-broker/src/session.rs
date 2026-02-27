@@ -33,11 +33,10 @@ pub fn stitch_packet(
     let mut dst_buf = vec![0u8; 65535];
 
     // Step 1: Decrypt incoming packet
-    let decap_result = src_peer.tunn.decapsulate(
-        Some(src_peer.endpoint.ip()),
-        encrypted_packet,
-        &mut dst_buf,
-    );
+    let decap_result =
+        src_peer
+            .tunn
+            .decapsulate(Some(src_peer.endpoint.ip()), encrypted_packet, &mut dst_buf);
 
     match decap_result {
         TunnResult::WriteToTunnelV4(plaintext, _) | TunnResult::WriteToTunnelV6(plaintext, _) => {
@@ -69,7 +68,11 @@ pub fn stitch_packet(
                     PolicyAction::Deny => {
                         tracing::debug!(
                             "Policy denied: {} -> {}:{} proto={} ({})",
-                            src_ip, dst_ip, dst_port.unwrap_or(0), proto, reason
+                            src_ip,
+                            dst_ip,
+                            dst_port.unwrap_or(0),
+                            proto,
+                            reason
                         );
                         src_peer.stitched_packets += 1;
                         return Ok(StitchResult::PolicyDenied(reason));

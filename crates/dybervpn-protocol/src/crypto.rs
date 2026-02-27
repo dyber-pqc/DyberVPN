@@ -71,7 +71,8 @@ pub trait CryptoBackend: Send + Sync {
     fn mlkem_encaps(&self, pk: &MlKemPublicKey) -> CryptoResult<(MlKemCiphertext, SharedSecret)>;
 
     /// Decapsulate a shared secret using an ML-KEM-768 secret key
-    fn mlkem_decaps(&self, sk: &MlKemSecretKey, ct: &MlKemCiphertext) -> CryptoResult<SharedSecret>;
+    fn mlkem_decaps(&self, sk: &MlKemSecretKey, ct: &MlKemCiphertext)
+        -> CryptoResult<SharedSecret>;
 
     // ========================================================================
     // X25519 (Classical Key Exchange)
@@ -135,7 +136,8 @@ pub trait CryptoBackend: Send + Sync {
     // ========================================================================
 
     /// HKDF-SHA256 extract and expand
-    fn hkdf_sha256(&self, salt: &[u8], ikm: &[u8], info: &[u8], okm: &mut [u8]) -> CryptoResult<()>;
+    fn hkdf_sha256(&self, salt: &[u8], ikm: &[u8], info: &[u8], okm: &mut [u8])
+        -> CryptoResult<()>;
 
     // ========================================================================
     // Hybrid Operations

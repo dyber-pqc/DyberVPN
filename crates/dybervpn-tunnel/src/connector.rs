@@ -70,10 +70,7 @@ impl ConnectorAgent {
             config.broker_control
         );
 
-        let stream = TcpStream::connect_timeout(
-            &config.broker_control,
-            Duration::from_secs(10),
-        )?;
+        let stream = TcpStream::connect_timeout(&config.broker_control, Duration::from_secs(10))?;
 
         // Set TCP keepalive and read timeout
         stream.set_nodelay(true)?;
@@ -113,8 +110,8 @@ impl ConnectorAgent {
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 Ok(Some(msg))
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock
-                || e.kind() == io::ErrorKind::TimedOut =>
+            Err(ref e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 Ok(None)
             }
@@ -154,7 +151,7 @@ impl ConnectorAgent {
                 .config
                 .broker_pq_public_key
                 .as_ref()
-                .map(|k| base64::encode(k)),
+                .map(base64::encode),
             mldsa_signature: mldsa_signature.map(|s| base64::encode(&s)),
             advertised_routes: routes,
             service_name: self.config.service_name.clone(),

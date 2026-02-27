@@ -1,7 +1,7 @@
 //! Health check system
 
-use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 
 /// Health status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,7 +72,7 @@ impl HealthCheck {
             checks: Vec::new(),
         }
     }
-    
+
     /// Add a component check
     pub fn add_check<F>(&mut self, check: F)
     where
@@ -80,15 +80,15 @@ impl HealthCheck {
     {
         self.checks.push(Box::new(check));
     }
-    
+
     /// Run all health checks
     pub fn check(&self) -> HealthCheckResult {
         let mut results = Vec::new();
         let mut overall_status = HealthStatus::Healthy;
-        
+
         for check in &self.checks {
             let result = check();
-            
+
             // Update overall status
             match (&overall_status, &result.status) {
                 (_, HealthStatus::Unhealthy) => overall_status = HealthStatus::Unhealthy,
@@ -97,10 +97,10 @@ impl HealthCheck {
                 }
                 _ => {}
             }
-            
+
             results.push(result);
         }
-        
+
         HealthCheckResult {
             status: overall_status,
             checks: results,
@@ -108,7 +108,7 @@ impl HealthCheck {
             uptime_seconds: self.start_time.elapsed().as_secs(),
         }
     }
-    
+
     /// Get uptime
     pub fn uptime(&self) -> Duration {
         self.start_time.elapsed()
@@ -137,7 +137,7 @@ where
     let start = Instant::now();
     let (healthy, message) = check();
     let duration = start.elapsed();
-    
+
     ComponentCheck {
         name: name.to_string(),
         status: if healthy {
@@ -153,30 +153,30 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_health_check() {
         let mut health = HealthCheck::new();
-        
+
         health.add_check(|| simple_check("test", true, None));
         health.add_check(|| simple_check("test2", true, Some("OK")));
-        
+
         let result = health.check();
         assert_eq!(result.status, HealthStatus::Healthy);
         assert_eq!(result.checks.len(), 2);
     }
-    
+
     #[test]
     fn test_degraded_status() {
         let mut health = HealthCheck::new();
-        
+
         health.add_check(|| ComponentCheck {
             name: "degraded".to_string(),
             status: HealthStatus::Degraded,
             message: Some("Performance issues".to_string()),
             duration_ms: 0,
         });
-        
+
         let result = health.check();
         assert_eq!(result.status, HealthStatus::Degraded);
     }

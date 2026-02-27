@@ -2,17 +2,17 @@
 //!
 //! This module implements the main VPN tunnel logic.
 
-use crate::config::{TunnelConfig, PeerConfig};
+use crate::config::{PeerConfig, TunnelConfig};
 use crate::error::{TunnelError, TunnelResult};
 
-use boringtun::noise::{Tunn, HybridHandshakeState};
+use boringtun::noise::{HybridHandshakeState, Tunn};
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock, atomic::AtomicBool};
+use std::sync::{atomic::AtomicBool, Arc, RwLock};
 use std::time::Instant;
 
-use x25519_dalek::{StaticSecret, PublicKey};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 /// Maximum packet size
 #[allow(dead_code)]
@@ -86,7 +86,7 @@ impl VpnTunnel {
     /// Create a new VPN tunnel
     pub fn new(config: TunnelConfig) -> TunnelResult<Self> {
         config.validate().map_err(TunnelError::Config)?;
-        
+
         Ok(Self {
             config,
             peers: HashMap::new(),
@@ -94,26 +94,26 @@ impl VpnTunnel {
             shutdown: Arc::new(AtomicBool::new(false)),
         })
     }
-    
+
     /// Get current state
     pub fn state(&self) -> TunnelState {
         *self.state.read().unwrap()
     }
-    
+
     /// Initialize peer connections
     pub fn init_peers(&mut self) -> TunnelResult<()> {
         let private_key = StaticSecret::from(self.config.private_key);
-        
+
         for (idx, peer_config) in self.config.peers.iter().enumerate() {
             let peer_public = PublicKey::from(peer_config.public_key);
-            
+
             // Create hybrid state if using PQ
             let hybrid_state = if self.config.mode.uses_pq_kex() {
                 Some(HybridHandshakeState::new(self.config.mode))
             } else {
                 None
             };
-            
+
             // Create tunnel for this peer
             let tunn = if let Some(hybrid_state) = hybrid_state {
                 Tunn::new_hybrid(
@@ -135,26 +135,26 @@ impl VpnTunnel {
                     None,
                 )
             };
-            
+
             let connection = PeerConnection {
                 tunn,
                 config: peer_config.clone(),
                 endpoint: peer_config.endpoint,
                 stats: PeerStats::default(),
             };
-            
+
             self.peers.insert(peer_config.public_key, connection);
-            
+
             tracing::debug!(
                 "Initialized peer {} with endpoint {:?}",
                 hex::encode(&peer_config.public_key[..4]),
                 peer_config.endpoint
             );
         }
-        
+
         Ok(())
     }
-    
+
     /// Get statistics for all peers
     pub fn get_stats(&self) -> Vec<PeerStats> {
         self.peers.values().map(|p| p.stats.clone()).collect()

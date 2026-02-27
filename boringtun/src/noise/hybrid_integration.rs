@@ -75,17 +75,15 @@ impl HybridInitiatorState {
     /// Create new initiator state, generating ephemeral PQ keypair
     pub fn new(mode: dybervpn_protocol::OperatingMode) -> Result<Self, WireGuardError> {
         let mut pq_state = HybridHandshakeState::new(mode);
-        
+
         if pq_state.is_pq_enabled() {
-            let pk = pq_state
-                .generate_ephemeral()
-                .map_err(|e| {
-                    tracing::error!("Failed to generate PQ ephemeral key: {}", e);
-                    WireGuardError::InvalidPacket
-                })?;
-            
+            let pk = pq_state.generate_ephemeral().map_err(|e| {
+                tracing::error!("Failed to generate PQ ephemeral key: {}", e);
+                WireGuardError::InvalidPacket
+            })?;
+
             let pq_ephemeral_pk = pk.as_bytes().to_vec();
-            
+
             Ok(Self {
                 pq_ephemeral_pk,
                 pq_state,
@@ -99,49 +97,49 @@ impl HybridInitiatorState {
             })
         }
     }
-    
+
     /// Set the ML-DSA keypair for signing (pq-only mode)
     pub fn set_mldsa_keypair(&mut self, keypair: MlDsaKeyPair) {
         self.pq_state.set_mldsa_keypair(keypair);
     }
-    
+
     /// Set the peer's ML-DSA public key for verification (pq-only mode)
     pub fn set_peer_mldsa_public_key(&mut self, pk: MlDsaPublicKey) {
         self.pq_state.set_peer_mldsa_public_key(pk);
     }
-    
+
     /// Add data to the handshake transcript
     pub fn extend_transcript(&mut self, data: &[u8]) {
         self.pq_state.extend_transcript(data);
     }
-    
+
     /// Sign the current transcript (for pq-only mode)
     pub fn sign_transcript(&mut self) -> Result<Vec<u8>, WireGuardError> {
         if !self.pq_state.is_pq_auth_enabled() {
             return Err(WireGuardError::InvalidPacket);
         }
-        
+
         let sig = self.pq_state.sign_transcript().map_err(|e| {
             tracing::error!("ML-DSA signing failed: {}", e);
             WireGuardError::InvalidPacket
         })?;
-        
+
         let sig_bytes = sig.as_bytes().to_vec();
         self.mldsa_signature = Some(sig_bytes.clone());
         Ok(sig_bytes)
     }
-    
+
     /// Verify peer's signature over transcript (for pq-only mode)
     pub fn verify_peer_signature(&self, signature: &[u8]) -> Result<bool, WireGuardError> {
         if !self.pq_state.is_pq_auth_enabled() {
             return Ok(true); // Not required in non-pq-only modes
         }
-        
+
         let sig = MlDsaSignature::from_bytes(signature).map_err(|e| {
             tracing::error!("Invalid ML-DSA signature format: {}", e);
             WireGuardError::InvalidPacket
         })?;
-        
+
         self.pq_state.verify_peer_signature(&sig).map_err(|e| {
             tracing::error!("ML-DSA verification failed: {}", e);
             WireGuardError::InvalidPacket
@@ -150,12 +148,10 @@ impl HybridInitiatorState {
 
     /// Process response: decapsulate the ciphertext
     pub fn process_response(&mut self, pq_ciphertext: &[u8]) -> Result<[u8; 32], WireGuardError> {
-        self.pq_state
-            .decapsulate(pq_ciphertext)
-            .map_err(|e| {
-                tracing::error!("PQ decapsulation failed: {}", e);
-                WireGuardError::InvalidPacket
-            })
+        self.pq_state.decapsulate(pq_ciphertext).map_err(|e| {
+            tracing::error!("PQ decapsulation failed: {}", e);
+            WireGuardError::InvalidPacket
+        })
     }
 }
 
@@ -166,15 +162,14 @@ impl HybridResponderState {
         initiator_pq_pk: &[u8],
     ) -> Result<Self, WireGuardError> {
         let mut pq_state = HybridHandshakeState::new(mode);
-        
+
         if pq_state.is_pq_enabled() {
-            let (ciphertext, shared_secret) = pq_state
-                .encapsulate_to_peer(initiator_pq_pk)
-                .map_err(|e| {
+            let (ciphertext, shared_secret) =
+                pq_state.encapsulate_to_peer(initiator_pq_pk).map_err(|e| {
                     tracing::error!("PQ encapsulation failed: {}", e);
                     WireGuardError::InvalidPacket
                 })?;
-            
+
             Ok(Self {
                 pq_ciphertext: ciphertext,
                 pq_shared_secret: shared_secret,
@@ -185,55 +180,55 @@ impl HybridResponderState {
             Err(WireGuardError::InvalidPacket)
         }
     }
-    
+
     /// Set the ML-DSA keypair for signing (pq-only mode)
     pub fn set_mldsa_keypair(&mut self, keypair: MlDsaKeyPair) {
         self.pq_state.set_mldsa_keypair(keypair);
     }
-    
+
     /// Set the peer's ML-DSA public key for verification (pq-only mode)
     pub fn set_peer_mldsa_public_key(&mut self, pk: MlDsaPublicKey) {
         self.pq_state.set_peer_mldsa_public_key(pk);
     }
-    
+
     /// Add data to the handshake transcript
     pub fn extend_transcript(&mut self, data: &[u8]) {
         self.pq_state.extend_transcript(data);
     }
-    
+
     /// Sign the current transcript (for pq-only mode)
     pub fn sign_transcript(&mut self) -> Result<Vec<u8>, WireGuardError> {
         if !self.pq_state.is_pq_auth_enabled() {
             return Err(WireGuardError::InvalidPacket);
         }
-        
+
         let sig = self.pq_state.sign_transcript().map_err(|e| {
             tracing::error!("ML-DSA signing failed: {}", e);
             WireGuardError::InvalidPacket
         })?;
-        
+
         let sig_bytes = sig.as_bytes().to_vec();
         self.mldsa_signature = Some(sig_bytes.clone());
         Ok(sig_bytes)
     }
-    
+
     /// Verify peer's signature over transcript (for pq-only mode)
     pub fn verify_peer_signature(&self, signature: &[u8]) -> Result<bool, WireGuardError> {
         if !self.pq_state.is_pq_auth_enabled() {
             return Ok(true); // Not required in non-pq-only modes
         }
-        
+
         let sig = MlDsaSignature::from_bytes(signature).map_err(|e| {
             tracing::error!("Invalid ML-DSA signature format: {}", e);
             WireGuardError::InvalidPacket
         })?;
-        
+
         self.pq_state.verify_peer_signature(&sig).map_err(|e| {
             tracing::error!("ML-DSA verification failed: {}", e);
             WireGuardError::InvalidPacket
         })
     }
-    
+
     /// Check if PQ authentication is enabled
     pub fn is_pq_auth_enabled(&self) -> bool {
         self.pq_state.is_pq_auth_enabled()
@@ -288,15 +283,15 @@ mod tests {
         assert_eq!(initiator.pq_ephemeral_pk.len(), MLKEM_PUBLIC_KEY_SIZE);
 
         // Responder encapsulates to initiator's public key
-        let responder = HybridResponderState::new(
-            OperatingMode::Hybrid,
-            &initiator.pq_ephemeral_pk,
-        ).unwrap();
+        let responder =
+            HybridResponderState::new(OperatingMode::Hybrid, &initiator.pq_ephemeral_pk).unwrap();
         assert_eq!(responder.pq_ciphertext.len(), MLKEM_CIPHERTEXT_SIZE);
 
         // Initiator decapsulates
         let mut initiator = initiator;
-        let initiator_ss = initiator.process_response(&responder.pq_ciphertext).unwrap();
+        let initiator_ss = initiator
+            .process_response(&responder.pq_ciphertext)
+            .unwrap();
 
         // Shared secrets should match
         assert_eq!(initiator_ss, responder.pq_shared_secret);
@@ -308,97 +303,96 @@ mod tests {
         // In classic mode, no PQ key should be generated
         assert!(initiator.pq_ephemeral_pk.is_empty());
     }
-    
+
     #[test]
     fn test_pq_only_mode_with_mldsa_signing() {
         // Generate ML-DSA keypairs for both parties
         let initiator_keypair = MlDsaKeyPair::generate().unwrap();
         let responder_keypair = MlDsaKeyPair::generate().unwrap();
-        
+
         // Initiator generates ephemeral PQ keypair
         let mut initiator = HybridInitiatorState::new(OperatingMode::PqOnly).unwrap();
         assert!(!initiator.pq_ephemeral_pk.is_empty());
-        
+
         // Set up ML-DSA keys
         initiator.set_mldsa_keypair(initiator_keypair.clone());
         initiator.set_peer_mldsa_public_key(responder_keypair.public_key().clone());
-        
+
         // Responder encapsulates
-        let mut responder = HybridResponderState::new(
-            OperatingMode::PqOnly,
-            &initiator.pq_ephemeral_pk,
-        ).unwrap();
-        
+        let mut responder =
+            HybridResponderState::new(OperatingMode::PqOnly, &initiator.pq_ephemeral_pk).unwrap();
+
         responder.set_mldsa_keypair(responder_keypair.clone());
         responder.set_peer_mldsa_public_key(initiator_keypair.public_key().clone());
-        
+
         // Simulate transcript: both parties record the same handshake data
         let handshake_data = b"handshake_initiation_data_here";
         initiator.extend_transcript(handshake_data);
         responder.extend_transcript(handshake_data);
-        
+
         // Initiator signs the transcript
         let initiator_sig = initiator.sign_transcript().unwrap();
         assert_eq!(initiator_sig.len(), MLDSA_SIGNATURE_SIZE);
-        
+
         // Responder verifies initiator's signature
         let valid = responder.verify_peer_signature(&initiator_sig).unwrap();
         assert!(valid, "Initiator signature should be valid");
-        
+
         // Add response to transcript
         let response_data = b"handshake_response_data_here";
         initiator.extend_transcript(response_data);
         responder.extend_transcript(response_data);
-        
+
         // Responder signs the transcript
         let responder_sig = responder.sign_transcript().unwrap();
         assert_eq!(responder_sig.len(), MLDSA_SIGNATURE_SIZE);
-        
+
         // Initiator verifies responder's signature
         let valid = initiator.verify_peer_signature(&responder_sig).unwrap();
         assert!(valid, "Responder signature should be valid");
-        
+
         // Verify key exchange still works
         // Re-create for clean decapsulation test
         let fresh_initiator = HybridInitiatorState::new(OperatingMode::PqOnly).unwrap();
-        let fresh_responder = HybridResponderState::new(
-            OperatingMode::PqOnly,
-            &fresh_initiator.pq_ephemeral_pk,
-        ).unwrap();
-        
+        let fresh_responder =
+            HybridResponderState::new(OperatingMode::PqOnly, &fresh_initiator.pq_ephemeral_pk)
+                .unwrap();
+
         let mut fresh_initiator = fresh_initiator;
-        let initiator_ss = fresh_initiator.process_response(&fresh_responder.pq_ciphertext).unwrap();
+        let initiator_ss = fresh_initiator
+            .process_response(&fresh_responder.pq_ciphertext)
+            .unwrap();
         assert_eq!(initiator_ss, fresh_responder.pq_shared_secret);
     }
-    
+
     #[test]
     fn test_mldsa_signature_verification_fails_with_wrong_key() {
         let initiator_keypair = MlDsaKeyPair::generate().unwrap();
         let responder_keypair = MlDsaKeyPair::generate().unwrap();
         let wrong_keypair = MlDsaKeyPair::generate().unwrap();
-        
+
         let mut initiator = HybridInitiatorState::new(OperatingMode::PqOnly).unwrap();
         initiator.set_mldsa_keypair(initiator_keypair.clone());
         initiator.set_peer_mldsa_public_key(wrong_keypair.public_key().clone()); // Wrong key!
-        
-        let mut responder = HybridResponderState::new(
-            OperatingMode::PqOnly,
-            &initiator.pq_ephemeral_pk,
-        ).unwrap();
+
+        let mut responder =
+            HybridResponderState::new(OperatingMode::PqOnly, &initiator.pq_ephemeral_pk).unwrap();
         responder.set_mldsa_keypair(responder_keypair.clone());
         responder.set_peer_mldsa_public_key(initiator_keypair.public_key().clone());
-        
+
         // Add same transcript
         let data = b"test_transcript";
         initiator.extend_transcript(data);
         responder.extend_transcript(data);
-        
+
         // Responder signs
         let responder_sig = responder.sign_transcript().unwrap();
-        
+
         // Initiator tries to verify with wrong public key - should fail
         let result = initiator.verify_peer_signature(&responder_sig);
-        assert!(result.is_err() || result.unwrap() == false, 
-            "Verification should fail with wrong public key");
+        assert!(
+            result.is_err() || !result.unwrap(),
+            "Verification should fail with wrong public key"
+        );
     }
 }

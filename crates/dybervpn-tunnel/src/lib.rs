@@ -27,13 +27,13 @@ pub mod windows;
 
 // Re-exports
 pub use audit::{AuditConfig, AuditLogger};
-pub use config::{TunnelConfig, PeerConfig, ConnectorConfig};
+pub use config::{ConnectorConfig, PeerConfig, TunnelConfig};
 pub use daemon::Daemon;
 pub use device::DeviceHandle;
 pub use error::{TunnelError, TunnelResult};
-pub use policy::{PolicyConfig, PolicyEngine, PolicyAction};
-pub use revocation::{RevocationEngine, RevocationReason, SecurityConfig, KeyStatus};
-pub use tunnel::{VpnTunnel, TunnelState, PeerStats};
+pub use policy::{PolicyAction, PolicyConfig, PolicyEngine};
+pub use revocation::{KeyStatus, RevocationEngine, RevocationReason, SecurityConfig};
+pub use tunnel::{PeerStats, TunnelState, VpnTunnel};
 
 /// Maximum transmission unit (MTU) for WireGuard
 pub const DEFAULT_MTU: u16 = 1420;

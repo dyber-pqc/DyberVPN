@@ -122,8 +122,18 @@ pub struct BrokerSection {
     pub heartbeat_timeout: u64,
 }
 
-fn default_udp_listen() -> String { "0.0.0.0:51820".to_string() }
-fn default_control_listen() -> String { "0.0.0.0:51821".to_string() }
-fn default_max_clients() -> usize { 1000 }
-fn default_session_timeout() -> u64 { 300 }
-fn default_heartbeat_timeout() -> u64 { 120 }
+fn default_udp_listen() -> String {
+    "0.0.0.0:51820".to_string()
+}
+fn default_control_listen() -> String {
+    "0.0.0.0:51821".to_string()
+}
+fn default_max_clients() -> usize {
+    1000
+}
+fn default_session_timeout() -> u64 {
+    300
+}
+fn default_heartbeat_timeout() -> u64 {
+    120
+}

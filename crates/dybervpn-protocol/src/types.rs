@@ -86,7 +86,11 @@ impl MlKemPublicKey {
 
 impl fmt::Debug for MlKemPublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MlKemPublicKey([{}...])", hex::encode(&self.0[..8.min(self.0.len())]))
+        write!(
+            f,
+            "MlKemPublicKey([{}...])",
+            hex::encode(&self.0[..8.min(self.0.len())])
+        )
     }
 }
 
@@ -142,7 +146,11 @@ impl MlKemCiphertext {
 
 impl fmt::Debug for MlKemCiphertext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MlKemCiphertext([{}...])", hex::encode(&self.0[..8.min(self.0.len())]))
+        write!(
+            f,
+            "MlKemCiphertext([{}...])",
+            hex::encode(&self.0[..8.min(self.0.len())])
+        )
     }
 }
 
@@ -185,7 +193,11 @@ impl MlDsaPublicKey {
 
 impl fmt::Debug for MlDsaPublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MlDsaPublicKey([{}...])", hex::encode(&self.0[..8.min(self.0.len())]))
+        write!(
+            f,
+            "MlDsaPublicKey([{}...])",
+            hex::encode(&self.0[..8.min(self.0.len())])
+        )
     }
 }
 
@@ -241,7 +253,11 @@ impl MlDsaSignature {
 
 impl fmt::Debug for MlDsaSignature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MlDsaSignature([{}...])", hex::encode(&self.0[..8.min(self.0.len())]))
+        write!(
+            f,
+            "MlDsaSignature([{}...])",
+            hex::encode(&self.0[..8.min(self.0.len())])
+        )
     }
 }
 
@@ -369,11 +385,20 @@ mod tests {
 
     #[test]
     fn test_operating_mode_from_str() {
-        assert_eq!("hybrid".parse::<OperatingMode>().unwrap(), OperatingMode::Hybrid);
-        assert_eq!("pq-only".parse::<OperatingMode>().unwrap(), OperatingMode::PqOnly);
-        assert_eq!("classic".parse::<OperatingMode>().unwrap(), OperatingMode::Classic);
+        assert_eq!(
+            "hybrid".parse::<OperatingMode>().unwrap(),
+            OperatingMode::Hybrid
+        );
+        assert_eq!(
+            "pq-only".parse::<OperatingMode>().unwrap(),
+            OperatingMode::PqOnly
+        );
+        assert_eq!(
+            "classic".parse::<OperatingMode>().unwrap(),
+            OperatingMode::Classic
+        );
     }
-    
+
     #[test]
     fn test_mldsa_key_sizes() {
         // Verify ML-DSA-65 sizes match FIPS 204 spec

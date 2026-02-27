@@ -8,10 +8,8 @@
 //! to prevent replay attacks.
 
 use crate::error::{BrokerError, BrokerResult};
-use dybervpn_protocol::{
-    select_backend, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature,
-};
-use sha2::{Sha256, Digest};
+use dybervpn_protocol::{select_backend, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature};
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Maximum allowed clock skew for authentication timestamps (5 minutes)
@@ -21,7 +19,7 @@ const MAX_CLOCK_SKEW: u64 = 300;
 fn build_auth_message(public_key: &[u8; 32], timestamp: u64) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(public_key);
-    hasher.update(&timestamp.to_be_bytes());
+    hasher.update(timestamp.to_be_bytes());
     hasher.finalize().to_vec()
 }
 
@@ -32,11 +30,7 @@ fn check_timestamp(timestamp: u64) -> bool {
         .unwrap_or_default()
         .as_secs();
 
-    let skew = if now > timestamp {
-        now - timestamp
-    } else {
-        timestamp - now
-    };
+    let skew = now.abs_diff(timestamp);
 
     skew <= MAX_CLOCK_SKEW
 }
@@ -75,7 +69,8 @@ pub fn verify_mldsa_auth(
     match backend.mldsa_verify(&mldsa_pk, &message, &signature) {
         Ok(valid) => Ok(valid),
         Err(e) => Err(BrokerError::AuthFailed(format!(
-            "ML-DSA verify error: {}", e
+            "ML-DSA verify error: {}",
+            e
         ))),
     }
 }
@@ -135,11 +130,9 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        let sig = sign_mldsa_auth(sk.as_bytes(), &x25519_key, timestamp)
-            .expect("sign");
+        let sig = sign_mldsa_auth(sk.as_bytes(), &x25519_key, timestamp).expect("sign");
 
-        let valid = verify_mldsa_auth(pk.as_bytes(), &x25519_key, timestamp, &sig)
-            .expect("verify");
+        let valid = verify_mldsa_auth(pk.as_bytes(), &x25519_key, timestamp, &sig).expect("verify");
 
         assert!(valid, "signature should verify");
     }
@@ -156,11 +149,10 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        let sig = sign_mldsa_auth(sk1.as_bytes(), &x25519_key, timestamp)
-            .expect("sign");
+        let sig = sign_mldsa_auth(sk1.as_bytes(), &x25519_key, timestamp).expect("sign");
 
-        let valid = verify_mldsa_auth(pk2.as_bytes(), &x25519_key, timestamp, &sig)
-            .expect("verify");
+        let valid =
+            verify_mldsa_auth(pk2.as_bytes(), &x25519_key, timestamp, &sig).expect("verify");
 
         assert!(!valid, "signature should NOT verify with wrong key");
     }

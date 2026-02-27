@@ -11,71 +11,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-jobs:
-  # Create GitHub Release
-  create-release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      version: ${{ steps.get_version.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Get version
-        id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-        
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: DyberVPN v${{ steps.get_version.outputs.version }}
-          body: |
-            ## DyberVPN v${{ steps.get_version.outputs.version }}
-            
-            ### Post-Quantum VPN for Infrastructure You Control
-            
-            See [CHANGELOG.md](https://github.com/dyber-pqc/DyberVPN/blob/main/CHANGELOG.md) for details.
-            
-            ### Cryptographic Algorithms
-            - **Key Exchange**: ML-KEM-768 + X25519 (FIPS 203)
-            - **Authentication**: ML-DSA-65 (FIPS 204) / Ed25519
-            - **Encryption**: ChaCha20-Poly1305
-            
-            ### Verify Release (ML-DSA-65 Post-Quantum Signature)
-            
-            All release artifacts are signed with ML-DSA-65 (FIPS 204).
-            
-            ```bash
-            # Download the public key (or use the one in the repo root)
-            curl -sLO https://raw.githubusercontent.com/dyber-pqc/DyberVPN/main/release-signing.mldsa.pub
-            
-            # Verify any artifact
-            dybervpn verify dybervpn-${{ steps.get_version.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz \
-              --key release-signing.mldsa.pub
-            ```
-            
-            ### Installation
-            
-            ```bash
-            # Download and extract
-            tar -xzf dybervpn-${{ steps.get_version.outputs.version }}-linux-x86_64.tar.gz
-            sudo mv dybervpn /usr/local/bin/
-            
-            # Or use Docker
-            docker pull ghcr.io/dyber-pqc/dybervpn:${{ steps.get_version.outputs.version }}
-            ```
-          draft: false
-          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+permissions:
+  contents: write
+  packages: write
 
+jobs:
   # Build binaries for each platform
   build-binaries:
     name: Build (${{ matrix.target }})
-    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -90,83 +33,72 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: dybervpn
-          # macOS builds (when supported)
-          # - target: x86_64-apple-darwin
-          #   os: macos-latest
-          #   artifact: dybervpn
-          # - target: aarch64-apple-darwin
-          #   os: macos-latest
-          #   artifact: dybervpn
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-          
+
       - name: Install cross-compilation tools
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-          
+
       - name: Install musl tools
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-          
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-          
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} --bin dybervpn
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          
+
       - name: Package
         run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
           mkdir -p dist
           cp target/${{ matrix.target }}/release/${{ matrix.artifact }} dist/
-          cp README.md LICENSE CHANGELOG.md dist/
+          cp README.md dist/
+          [ -f LICENSE ] && cp LICENSE dist/ || true
+          [ -f LICENSE.md ] && cp LICENSE.md dist/ || true
+          [ -f CHANGELOG.md ] && cp CHANGELOG.md dist/ || true
           cd dist
-          tar -czf ../dybervpn-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz *
-          
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tar -czf ../dybervpn-${VERSION}-${{ matrix.target }}.tar.gz *
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: dybervpn-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz
-          asset_name: dybervpn-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz
-          asset_content_type: application/gzip
+          name: dybervpn-${{ matrix.target }}
+          path: dybervpn-*.tar.gz
 
   # Build and push Docker image
   docker:
     name: Docker
-    needs: create-release
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-        
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        
+
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-          
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -175,102 +107,108 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
             type=raw,value=latest,enable={{is_default_branch}}
-            
+
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./deploy/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # PQ-sign release artifacts with ML-DSA-65 + generate checksums
-  sign-and-checksums:
-    name: PQ Sign & Checksums
-    needs: [create-release, build-binaries]
+  # Create GitHub Release with all artifacts
+  release:
+    name: Create Release
+    needs: [build-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
 
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: DyberVPN v${{ steps.version.outputs.version }}
+          body: |
+            ## DyberVPN v${{ steps.version.outputs.version }}
+
+            ### Post-Quantum VPN & Zero Trust Network Access
+
+            ### Cryptographic Algorithms
+            - **Key Exchange**: ML-KEM-768 + X25519 (FIPS 203)
+            - **Authentication**: ML-DSA-65 (FIPS 204) / Ed25519
+            - **Encryption**: ChaCha20-Poly1305
+
+            ### Installation
+
+            ```bash
+            # Download and extract
+            tar -xzf dybervpn-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
+            sudo mv dybervpn /usr/local/bin/
+
+            # Or use Docker
+            docker pull ghcr.io/dyber-pqc/dybervpn:${{ steps.version.outputs.version }}
+            ```
+          files: |
+            artifacts/*.tar.gz
+            artifacts/SHA256SUMS.txt
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+
+  # PQ-sign release artifacts (only if signing key is configured)
+  sign:
+    name: PQ Sign Artifacts
+    needs: [build-binaries]
+    runs-on: ubuntu-latest
+    if: ${{ secrets.MLDSA_SIGNING_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       - name: Build dybervpn CLI
         run: cargo build --release --bin dybervpn
 
-      - name: Download all release artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
-
-      - name: Collect tarballs
-        run: |
-          mkdir -p signing/
-          find artifacts/ -name '*.tar.gz' -exec cp {} signing/ \;
-          ls -la signing/
+          merge-multiple: true
 
       - name: PQ-sign artifacts with ML-DSA-65
         env:
           MLDSA_SIGNING_KEY_B64: ${{ secrets.MLDSA_SIGNING_KEY }}
         run: |
-          # Decode private key from GitHub secret
           echo "$MLDSA_SIGNING_KEY_B64" | base64 -d > signing.mldsa.key
-          
-          # Verify key size (ML-DSA-65 = 4032 bytes)
-          KEY_SIZE=$(wc -c < signing.mldsa.key)
-          if [ "$KEY_SIZE" -ne 4032 ]; then
-            echo "ERROR: Invalid signing key size: $KEY_SIZE (expected 4032)"
-            exit 1
-          fi
-          
-          # Sign each artifact
-          for f in signing/*.tar.gz; do
+
+          for f in artifacts/*.tar.gz; do
             echo "Signing: $f"
             ./target/release/dybervpn sign "$f" --key signing.mldsa.key
           done
-          
-          # Sign the dybervpn binary itself
-          cp target/release/dybervpn signing/dybervpn-linux-x86_64
-          ./target/release/dybervpn sign signing/dybervpn-linux-x86_64 --key signing.mldsa.key
-          
-          # Securely delete private key
+
           shred -u signing.mldsa.key 2>/dev/null || rm -f signing.mldsa.key
-          
-          echo "Signed artifacts:"
-          ls -la signing/*.sig.mldsa
 
-      - name: Generate SHA-256 checksums
-        run: |
-          cd signing
-          sha256sum *.tar.gz > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: Upload checksums
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload signatures to release
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: signing/SHA256SUMS.txt
-          asset_name: SHA256SUMS.txt
-          asset_content_type: text/plain
-
-      - name: Upload PQ signatures
-        run: |
-          for sig in signing/*.sig.mldsa; do
-            name=$(basename "$sig")
-            echo "Uploading: $name"
-            curl -sSL \
-              -X POST \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary @"$sig" \
-              "${{ needs.create-release.outputs.upload_url }}=$name"
-          done
+          files: artifacts/*.sig.mldsa

@@ -77,11 +77,12 @@ impl CryptoBackend for SoftwareBackend {
         // Convert to the Array type ml-kem expects
         let ek_array = ml_kem::Encoded::<EncapsulationKey<MlKem768Params>>::try_from(ek_bytes)
             .map_err(|_| CryptoError::Encapsulation("Failed to parse encapsulation key".into()))?;
-        
+
         let ek = EncapsulationKey::<MlKem768Params>::from_bytes(&ek_array);
 
         // Encapsulate returns Result<(Ciphertext, SharedKey), ()>
-        let (ct, ss) = ek.encapsulate(&mut OsRng)
+        let (ct, ss) = ek
+            .encapsulate(&mut OsRng)
             .map_err(|_| CryptoError::Encapsulation("Encapsulation failed".into()))?;
 
         let ct_bytes: &[u8] = ct.as_ref();
@@ -101,7 +102,11 @@ impl CryptoBackend for SoftwareBackend {
         Ok((MlKemCiphertext(ct_bytes.to_vec()), SharedSecret(ss_arr)))
     }
 
-    fn mlkem_decaps(&self, sk: &MlKemSecretKey, ct: &MlKemCiphertext) -> CryptoResult<SharedSecret> {
+    fn mlkem_decaps(
+        &self,
+        sk: &MlKemSecretKey,
+        ct: &MlKemCiphertext,
+    ) -> CryptoResult<SharedSecret> {
         let dk_bytes = sk.as_bytes();
         if dk_bytes.len() != mlkem768::SECRET_KEY_SIZE {
             return Err(CryptoError::Decapsulation("Invalid secret key size".into()));
@@ -115,14 +120,15 @@ impl CryptoBackend for SoftwareBackend {
         // Convert to Array types
         let dk_array = ml_kem::Encoded::<DecapsulationKey<MlKem768Params>>::try_from(dk_bytes)
             .map_err(|_| CryptoError::Decapsulation("Failed to parse decapsulation key".into()))?;
-        
+
         let ct_array = ml_kem::Ciphertext::<MlKem768>::try_from(ct_bytes)
             .map_err(|_| CryptoError::Decapsulation("Failed to parse ciphertext".into()))?;
 
         let dk = DecapsulationKey::<MlKem768Params>::from_bytes(&dk_array);
 
         // Decapsulate returns Result<SharedKey, ()>
-        let ss = dk.decapsulate(&ct_array)
+        let ss = dk
+            .decapsulate(&ct_array)
             .map_err(|_| CryptoError::Decapsulation("Decapsulation failed".into()))?;
 
         let ss_bytes: &[u8] = ss.as_ref();
@@ -206,17 +212,17 @@ impl CryptoBackend for SoftwareBackend {
         // Generate a 32-byte seed for key generation
         let mut seed = [0u8; 32];
         self.random_bytes(&mut seed)?;
-        
+
         // Create signing key from seed
         let signing_key = ml_dsa::SigningKey::<MlDsa65>::from_seed(&seed.into());
         let verifying_key = signing_key.verifying_key();
-        
+
         // Get expanded signing key bytes (this is what we store)
         // Note: to_expanded is deprecated, but we need it for key serialization
         #[allow(deprecated)]
         let sk_expanded = signing_key.to_expanded();
         let sk_bytes: &[u8] = sk_expanded.as_ref();
-        
+
         // Get verifying key bytes
         let pk_encoded = verifying_key.encode();
         let pk_bytes: &[u8] = pk_encoded.as_ref();
@@ -377,7 +383,9 @@ mod tests {
         assert!(valid);
 
         // Wrong message should fail
-        let invalid = b.ed25519_verify(&pk, b"wrong message", &sig).expect("verify failed");
+        let invalid = b
+            .ed25519_verify(&pk, b"wrong message", &sig)
+            .expect("verify failed");
         assert!(!invalid);
     }
 
@@ -394,7 +402,9 @@ mod tests {
         assert!(valid);
 
         // Wrong message should fail
-        let invalid = b.mldsa_verify(&pk, b"wrong message", &sig).expect("verify failed");
+        let invalid = b
+            .mldsa_verify(&pk, b"wrong message", &sig)
+            .expect("verify failed");
         assert!(!invalid);
     }
 
@@ -411,13 +421,23 @@ mod tests {
 
         // Responder encapsulates
         let (mlkem_ct, mlkem_ss_r) = b.mlkem_encaps(&mlkem_pk_i).expect("encaps failed");
-        let x25519_ss_r = b.x25519_diffie_hellman(&x25519_sk_r, &x25519_pk_i).expect("DH failed");
-        let combined_r = b.combine_shared_secrets(&mlkem_ss_r, &x25519_ss_r, b"test").expect("combine failed");
+        let x25519_ss_r = b
+            .x25519_diffie_hellman(&x25519_sk_r, &x25519_pk_i)
+            .expect("DH failed");
+        let combined_r = b
+            .combine_shared_secrets(&mlkem_ss_r, &x25519_ss_r, b"test")
+            .expect("combine failed");
 
         // Initiator decapsulates
-        let mlkem_ss_i = b.mlkem_decaps(&mlkem_sk_i, &mlkem_ct).expect("decaps failed");
-        let x25519_ss_i = b.x25519_diffie_hellman(&x25519_sk_i, &x25519_pk_r).expect("DH failed");
-        let combined_i = b.combine_shared_secrets(&mlkem_ss_i, &x25519_ss_i, b"test").expect("combine failed");
+        let mlkem_ss_i = b
+            .mlkem_decaps(&mlkem_sk_i, &mlkem_ct)
+            .expect("decaps failed");
+        let x25519_ss_i = b
+            .x25519_diffie_hellman(&x25519_sk_i, &x25519_pk_r)
+            .expect("DH failed");
+        let combined_i = b
+            .combine_shared_secrets(&mlkem_ss_i, &x25519_ss_i, b"test")
+            .expect("combine failed");
 
         assert_eq!(combined_i.as_bytes(), combined_r.as_bytes());
     }

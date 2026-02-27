@@ -27,12 +27,12 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    
+
     let mut result = 0u8;
     for (x, y) in a.iter().zip(b.iter()) {
         result |= x ^ y;
     }
-    
+
     // Use black_box to prevent compiler from optimizing
     std::hint::black_box(result) == 0
 }
@@ -484,7 +484,7 @@ impl Handshake {
     pub(crate) fn clear_cookie(&mut self) {
         self.cookies.write_cookie = None;
     }
-    
+
     /// Get the init message we sent (for PQ-auth transcript reconstruction)
     /// Returns None if we're not in InitSent state or if the init wasn't stored
     pub(crate) fn get_sent_init(&self) -> Option<&[u8; 148]> {
@@ -809,11 +809,11 @@ impl Handshake {
         hash = b2s_hash(&hash, encrypted_timestamp);
 
         let time_now = Instant::now();
-        
+
         // Store a copy of the init message for PQ-auth transcript reconstruction
         let mut sent_init = [0u8; 148];
         sent_init.copy_from_slice(&dst[..148]);
-        
+
         self.previous = std::mem::replace(
             &mut self.state,
             HandshakeState::InitSent(HandshakeInitSentState {

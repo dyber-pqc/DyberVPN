@@ -1,11 +1,6 @@
 //! Structured logging configuration
 
-use tracing_subscriber::{
-    fmt,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-    EnvFilter,
-};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Logging configuration
 #[derive(Debug, Clone)]
@@ -50,7 +45,7 @@ impl LogConfig {
             thread_ids: false,
         }
     }
-    
+
     /// Create a new log config for production
     pub fn production() -> Self {
         Self {
@@ -64,9 +59,9 @@ impl LogConfig {
 
 /// Initialize logging with the given configuration
 pub fn init_logging(config: &LogConfig) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.level));
-    
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.level));
+
     match config.format {
         LogFormat::Pretty => {
             let layer = fmt::layer()
@@ -74,7 +69,7 @@ pub fn init_logging(config: &LogConfig) {
                 .with_file(config.file_info)
                 .with_line_number(config.file_info)
                 .with_thread_ids(config.thread_ids);
-            
+
             tracing_subscriber::registry()
                 .with(filter)
                 .with(layer)
@@ -86,14 +81,14 @@ pub fn init_logging(config: &LogConfig) {
                 .with_file(config.file_info)
                 .with_line_number(config.file_info)
                 .with_thread_ids(config.thread_ids);
-            
+
             tracing_subscriber::registry()
                 .with(filter)
                 .with(layer)
                 .init();
         }
     }
-    
+
     tracing::info!(
         level = %config.level,
         format = ?config.format,

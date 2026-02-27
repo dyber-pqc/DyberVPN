@@ -108,29 +108,55 @@ pub struct SelfTestReport {
 
 impl std::fmt::Display for SelfTestReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "╔══════════════════════════════════════════════════════════╗")?;
-        writeln!(f, "║        DyberVPN FIPS 140-3 Self-Test Report             ║")?;
-        writeln!(f, "╠══════════════════════════════════════════════════════════╣")?;
+        writeln!(
+            f,
+            "╔══════════════════════════════════════════════════════════╗"
+        )?;
+        writeln!(
+            f,
+            "║        DyberVPN FIPS 140-3 Self-Test Report             ║"
+        )?;
+        writeln!(
+            f,
+            "╠══════════════════════════════════════════════════════════╣"
+        )?;
         writeln!(f, "║ Backend:  {:<46} ║", self.backend)?;
         writeln!(f, "║ Time:     {:<46} ║", self.timestamp)?;
         writeln!(f, "║ Duration: {:<46} ║", format!("{:.2?}", self.duration))?;
-        writeln!(f, "╠══════════════════════════════════════════════════════════╣")?;
+        writeln!(
+            f,
+            "╠══════════════════════════════════════════════════════════╣"
+        )?;
 
         for result in &self.results {
             let icon = if result.passed { "✓" } else { "✗" };
-            writeln!(f, "║ {} {:<54} ║", icon, 
-                format!("{} ({:.2?})", result.name, result.duration))?;
+            writeln!(
+                f,
+                "║ {} {:<54} ║",
+                icon,
+                format!("{} ({:.2?})", result.name, result.duration)
+            )?;
             if let Some(ref err) = result.error {
                 writeln!(f, "║   ERROR: {:<47} ║", err)?;
             }
         }
 
-        writeln!(f, "╠══════════════════════════════════════════════════════════╣")?;
-        let overall = if self.passed { "ALL TESTS PASSED" } else { "SELF-TEST FAILURE" };
+        writeln!(
+            f,
+            "╠══════════════════════════════════════════════════════════╣"
+        )?;
+        let overall = if self.passed {
+            "ALL TESTS PASSED"
+        } else {
+            "SELF-TEST FAILURE"
+        };
         let state_str = format!("Module state: {}", self.module_state);
         writeln!(f, "║ {:<56} ║", overall)?;
         writeln!(f, "║ {:<56} ║", state_str)?;
-        writeln!(f, "╚══════════════════════════════════════════════════════════╝")?;
+        writeln!(
+            f,
+            "╚══════════════════════════════════════════════════════════╝"
+        )?;
         Ok(())
     }
 }
@@ -164,54 +190,31 @@ pub fn run_power_on_self_tests(backend: &dyn CryptoBackend) -> SelfTestReport {
     let start = Instant::now();
     MODULE_STATE.store(ModuleState::SelfTesting as u8, Ordering::SeqCst);
 
-    tracing::info!("FIPS 140-3 power-on self-tests starting (backend: {})", backend.name());
+    tracing::info!(
+        "FIPS 140-3 power-on self-tests starting (backend: {})",
+        backend.name()
+    );
 
-    let mut results = Vec::new();
-
-    // ========================================================================
-    // 1. ML-KEM-768 Known-Answer Test (FIPS 203)
-    // ========================================================================
-    results.push(kat_mlkem768(backend));
-
-    // ========================================================================
-    // 2. ML-DSA-65 Known-Answer Test (FIPS 204)
-    // ========================================================================
-    results.push(kat_mldsa65(backend));
-
-    // ========================================================================
-    // 3. X25519 Known-Answer Test (RFC 7748)
-    // ========================================================================
-    results.push(kat_x25519(backend));
-
-    // ========================================================================
-    // 4. Ed25519 Known-Answer Test (RFC 8032)
-    // ========================================================================
-    results.push(kat_ed25519(backend));
-
-    // ========================================================================
-    // 5. HKDF-SHA256 Known-Answer Test (RFC 5869)
-    // ========================================================================
-    results.push(kat_hkdf_sha256(backend));
-
-    // ========================================================================
-    // 6. Continuous Random Number Generator Test (CRNGT)
-    // ========================================================================
-    results.push(crngt_initial(backend));
-
-    // ========================================================================
-    // 7. ML-KEM-768 Pairwise Consistency Test
-    // ========================================================================
-    results.push(pct_mlkem768(backend));
-
-    // ========================================================================
-    // 8. ML-DSA-65 Pairwise Consistency Test
-    // ========================================================================
-    results.push(pct_mldsa65(backend));
-
-    // ========================================================================
-    // 9. Ed25519 Pairwise Consistency Test
-    // ========================================================================
-    results.push(pct_ed25519(backend));
+    let results = vec![
+        // 1. ML-KEM-768 Known-Answer Test (FIPS 203)
+        kat_mlkem768(backend),
+        // 2. ML-DSA-65 Known-Answer Test (FIPS 204)
+        kat_mldsa65(backend),
+        // 3. X25519 Known-Answer Test (RFC 7748)
+        kat_x25519(backend),
+        // 4. Ed25519 Known-Answer Test (RFC 8032)
+        kat_ed25519(backend),
+        // 5. HKDF-SHA256 Known-Answer Test (RFC 5869)
+        kat_hkdf_sha256(backend),
+        // 6. Continuous Random Number Generator Test (CRNGT)
+        crngt_initial(backend),
+        // 7. ML-KEM-768 Pairwise Consistency Test
+        pct_mlkem768(backend),
+        // 8. ML-DSA-65 Pairwise Consistency Test
+        pct_mldsa65(backend),
+        // 9. Ed25519 Pairwise Consistency Test
+        pct_ed25519(backend),
+    ];
 
     // Determine overall result
     let all_passed = results.iter().all(|r| r.passed);
@@ -221,7 +224,9 @@ pub fn run_power_on_self_tests(backend: &dyn CryptoBackend) -> SelfTestReport {
         MODULE_STATE.store(ModuleState::Operational as u8, Ordering::SeqCst);
         tracing::info!(
             "FIPS 140-3 self-tests PASSED ({}/{} tests, {:.2?})",
-            results.len(), results.len(), duration
+            results.len(),
+            results.len(),
+            duration
         );
         ModuleState::Operational
     } else {
@@ -229,7 +234,8 @@ pub fn run_power_on_self_tests(backend: &dyn CryptoBackend) -> SelfTestReport {
         let failed: Vec<_> = results.iter().filter(|r| !r.passed).collect();
         tracing::error!(
             "FIPS 140-3 self-tests FAILED — {} of {} tests failed. Module entering error state.",
-            failed.len(), results.len()
+            failed.len(),
+            results.len()
         );
         for f in &failed {
             tracing::error!("  FAILED: {} — {:?}", f.name, f.error);
@@ -281,36 +287,42 @@ fn kat_mlkem768(backend: &dyn CryptoBackend) -> SelfTestResult {
 
     let result = (|| -> Result<(), String> {
         // Step 1: Generate keypair
-        let (pk, sk) = backend.mlkem_keygen()
+        let (pk, sk) = backend
+            .mlkem_keygen()
             .map_err(|e| format!("keygen failed: {}", e))?;
 
         // Step 2: Verify key sizes
         if pk.as_bytes().len() != crate::types::mlkem768::PUBLIC_KEY_SIZE {
             return Err(format!(
                 "public key size {} != expected {}",
-                pk.as_bytes().len(), crate::types::mlkem768::PUBLIC_KEY_SIZE
+                pk.as_bytes().len(),
+                crate::types::mlkem768::PUBLIC_KEY_SIZE
             ));
         }
         if sk.as_bytes().len() != crate::types::mlkem768::SECRET_KEY_SIZE {
             return Err(format!(
                 "secret key size {} != expected {}",
-                sk.as_bytes().len(), crate::types::mlkem768::SECRET_KEY_SIZE
+                sk.as_bytes().len(),
+                crate::types::mlkem768::SECRET_KEY_SIZE
             ));
         }
 
         // Step 3: Encapsulate
-        let (ct, ss_enc) = backend.mlkem_encaps(&pk)
+        let (ct, ss_enc) = backend
+            .mlkem_encaps(&pk)
             .map_err(|e| format!("encaps failed: {}", e))?;
 
         if ct.as_bytes().len() != crate::types::mlkem768::CIPHERTEXT_SIZE {
             return Err(format!(
                 "ciphertext size {} != expected {}",
-                ct.as_bytes().len(), crate::types::mlkem768::CIPHERTEXT_SIZE
+                ct.as_bytes().len(),
+                crate::types::mlkem768::CIPHERTEXT_SIZE
             ));
         }
 
         // Step 4: Decapsulate
-        let ss_dec = backend.mlkem_decaps(&sk, &ct)
+        let ss_dec = backend
+            .mlkem_decaps(&sk, &ct)
             .map_err(|e| format!("decaps failed: {}", e))?;
 
         // Step 5: Shared secrets must match
@@ -344,36 +356,42 @@ fn kat_mldsa65(backend: &dyn CryptoBackend) -> SelfTestResult {
 
     let result = (|| -> Result<(), String> {
         // Step 1: Generate keypair
-        let (pk, sk) = backend.mldsa_keygen()
+        let (pk, sk) = backend
+            .mldsa_keygen()
             .map_err(|e| format!("keygen failed: {}", e))?;
 
         // Step 2: Verify key sizes
         if pk.as_bytes().len() != crate::types::mldsa65::PUBLIC_KEY_SIZE {
             return Err(format!(
                 "public key size {} != expected {}",
-                pk.as_bytes().len(), crate::types::mldsa65::PUBLIC_KEY_SIZE
+                pk.as_bytes().len(),
+                crate::types::mldsa65::PUBLIC_KEY_SIZE
             ));
         }
         if sk.as_bytes().len() != crate::types::mldsa65::SECRET_KEY_SIZE {
             return Err(format!(
                 "secret key size {} != expected {}",
-                sk.as_bytes().len(), crate::types::mldsa65::SECRET_KEY_SIZE
+                sk.as_bytes().len(),
+                crate::types::mldsa65::SECRET_KEY_SIZE
             ));
         }
 
         // Step 3: Sign
-        let sig = backend.mldsa_sign(&sk, KAT_MESSAGE)
+        let sig = backend
+            .mldsa_sign(&sk, KAT_MESSAGE)
             .map_err(|e| format!("sign failed: {}", e))?;
 
         if sig.as_bytes().len() != crate::types::mldsa65::SIGNATURE_SIZE {
             return Err(format!(
                 "signature size {} != expected {}",
-                sig.as_bytes().len(), crate::types::mldsa65::SIGNATURE_SIZE
+                sig.as_bytes().len(),
+                crate::types::mldsa65::SIGNATURE_SIZE
             ));
         }
 
         // Step 4: Verify — must pass
-        let valid = backend.mldsa_verify(&pk, KAT_MESSAGE, &sig)
+        let valid = backend
+            .mldsa_verify(&pk, KAT_MESSAGE, &sig)
             .map_err(|e| format!("verify failed: {}", e))?;
 
         if !valid {
@@ -381,7 +399,8 @@ fn kat_mldsa65(backend: &dyn CryptoBackend) -> SelfTestResult {
         }
 
         // Step 5: Verify with wrong message — must fail
-        let invalid = backend.mldsa_verify(&pk, b"wrong message", &sig)
+        let invalid = backend
+            .mldsa_verify(&pk, b"wrong message", &sig)
             .map_err(|e| format!("verify-wrong failed: {}", e))?;
 
         if invalid {
@@ -407,31 +426,30 @@ fn kat_x25519(backend: &dyn CryptoBackend) -> SelfTestResult {
     let result = (|| -> Result<(), String> {
         // RFC 7748 Section 6.1 test vector
         let alice_private: [u8; 32] = [
-            0x77, 0x07, 0x6d, 0x0a, 0x73, 0x18, 0xa5, 0x7d,
-            0x3c, 0x16, 0xc1, 0x72, 0x51, 0xb2, 0x66, 0x45,
-            0xdf, 0x4c, 0x2f, 0x87, 0xeb, 0xc0, 0x99, 0x2a,
-            0xb1, 0x77, 0xfb, 0xa5, 0x1d, 0xb9, 0x2c, 0x2a,
+            0x77, 0x07, 0x6d, 0x0a, 0x73, 0x18, 0xa5, 0x7d, 0x3c, 0x16, 0xc1, 0x72, 0x51, 0xb2,
+            0x66, 0x45, 0xdf, 0x4c, 0x2f, 0x87, 0xeb, 0xc0, 0x99, 0x2a, 0xb1, 0x77, 0xfb, 0xa5,
+            0x1d, 0xb9, 0x2c, 0x2a,
         ];
         let bob_public: [u8; 32] = [
-            0xde, 0x9e, 0xdb, 0x7d, 0x7b, 0x7d, 0xc1, 0xb4,
-            0xd3, 0x5b, 0x61, 0xc2, 0xec, 0xe4, 0x35, 0x37,
-            0x3f, 0x83, 0x43, 0xc8, 0x5b, 0x78, 0x67, 0x4d,
-            0xad, 0xfc, 0x7e, 0x14, 0x6f, 0x88, 0x2b, 0x4f,
+            0xde, 0x9e, 0xdb, 0x7d, 0x7b, 0x7d, 0xc1, 0xb4, 0xd3, 0x5b, 0x61, 0xc2, 0xec, 0xe4,
+            0x35, 0x37, 0x3f, 0x83, 0x43, 0xc8, 0x5b, 0x78, 0x67, 0x4d, 0xad, 0xfc, 0x7e, 0x14,
+            0x6f, 0x88, 0x2b, 0x4f,
         ];
         let expected_shared: [u8; 32] = [
-            0x4a, 0x5d, 0x9d, 0x5b, 0xa4, 0xce, 0x2d, 0xe1,
-            0x72, 0x8e, 0x3b, 0xf4, 0x80, 0x35, 0x0f, 0x25,
-            0xe0, 0x7e, 0x21, 0xc9, 0x47, 0xd1, 0x9e, 0x33,
-            0x76, 0xf0, 0x9b, 0x3c, 0x1e, 0x16, 0x17, 0x42,
+            0x4a, 0x5d, 0x9d, 0x5b, 0xa4, 0xce, 0x2d, 0xe1, 0x72, 0x8e, 0x3b, 0xf4, 0x80, 0x35,
+            0x0f, 0x25, 0xe0, 0x7e, 0x21, 0xc9, 0x47, 0xd1, 0x9e, 0x33, 0x76, 0xf0, 0x9b, 0x3c,
+            0x1e, 0x16, 0x17, 0x42,
         ];
 
-        let shared = backend.x25519_diffie_hellman(&alice_private, &bob_public)
+        let shared = backend
+            .x25519_diffie_hellman(&alice_private, &bob_public)
             .map_err(|e| format!("DH failed: {}", e))?;
 
-        if shared.as_bytes() != &expected_shared {
+        if shared.as_bytes() != expected_shared {
             return Err(format!(
                 "shared secret mismatch: got {:02x?}, expected {:02x?}",
-                &shared.as_bytes()[..8], &expected_shared[..8]
+                &shared.as_bytes()[..8],
+                &expected_shared[..8]
             ));
         }
 
@@ -455,28 +473,23 @@ fn kat_ed25519(backend: &dyn CryptoBackend) -> SelfTestResult {
         // RFC 8032 Section 7.1, TEST 2 (one-byte message 0x72)
         // Secret key (seed): 4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb
         let secret_seed: [u8; 32] = [
-            0x4c, 0xcd, 0x08, 0x9b, 0x28, 0xff, 0x96, 0xda,
-            0x9d, 0xb6, 0xc3, 0x46, 0xec, 0x11, 0x4e, 0x0f,
-            0x5b, 0x8a, 0x31, 0x9f, 0x35, 0xab, 0xa6, 0x24,
-            0xda, 0x8c, 0xf6, 0xed, 0x4f, 0xb8, 0xa6, 0xfb,
+            0x4c, 0xcd, 0x08, 0x9b, 0x28, 0xff, 0x96, 0xda, 0x9d, 0xb6, 0xc3, 0x46, 0xec, 0x11,
+            0x4e, 0x0f, 0x5b, 0x8a, 0x31, 0x9f, 0x35, 0xab, 0xa6, 0x24, 0xda, 0x8c, 0xf6, 0xed,
+            0x4f, 0xb8, 0xa6, 0xfb,
         ];
         // Public key: 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c
         let expected_public: [u8; 32] = [
-            0x3d, 0x40, 0x17, 0xc3, 0xe8, 0x43, 0x89, 0x5a,
-            0x92, 0xb7, 0x0a, 0xa7, 0x4d, 0x1b, 0x7e, 0xbc,
-            0x9c, 0x98, 0x2c, 0xcf, 0x2e, 0xc4, 0x96, 0x8c,
-            0xc0, 0xcd, 0x55, 0xf1, 0x2a, 0xf4, 0x66, 0x0c,
+            0x3d, 0x40, 0x17, 0xc3, 0xe8, 0x43, 0x89, 0x5a, 0x92, 0xb7, 0x0a, 0xa7, 0x4d, 0x1b,
+            0x7e, 0xbc, 0x9c, 0x98, 0x2c, 0xcf, 0x2e, 0xc4, 0x96, 0x8c, 0xc0, 0xcd, 0x55, 0xf1,
+            0x2a, 0xf4, 0x66, 0x0c,
         ];
         let message: [u8; 1] = [0x72];
         // Expected signature
         let expected_sig: [u8; 64] = [
-            0x92, 0xa0, 0x09, 0xa9, 0xf0, 0xd4, 0xca, 0xb8,
-            0x72, 0x0e, 0x82, 0x0b, 0x5f, 0x64, 0x25, 0x40,
-            0xa2, 0xb2, 0x7b, 0x54, 0x16, 0x50, 0x3f, 0x8f,
-            0xb3, 0x76, 0x22, 0x23, 0xeb, 0xdb, 0x69, 0xda,
-            0x08, 0x5a, 0xc1, 0xe4, 0x3e, 0x15, 0x99, 0x6e,
-            0x45, 0x8f, 0x36, 0x13, 0xd0, 0xf1, 0x1d, 0x8c,
-            0x38, 0x7b, 0x2e, 0xae, 0xb4, 0x30, 0x2a, 0xee,
+            0x92, 0xa0, 0x09, 0xa9, 0xf0, 0xd4, 0xca, 0xb8, 0x72, 0x0e, 0x82, 0x0b, 0x5f, 0x64,
+            0x25, 0x40, 0xa2, 0xb2, 0x7b, 0x54, 0x16, 0x50, 0x3f, 0x8f, 0xb3, 0x76, 0x22, 0x23,
+            0xeb, 0xdb, 0x69, 0xda, 0x08, 0x5a, 0xc1, 0xe4, 0x3e, 0x15, 0x99, 0x6e, 0x45, 0x8f,
+            0x36, 0x13, 0xd0, 0xf1, 0x1d, 0x8c, 0x38, 0x7b, 0x2e, 0xae, 0xb4, 0x30, 0x2a, 0xee,
             0xb0, 0x0d, 0x29, 0x16, 0x12, 0xbb, 0x0c, 0x00,
         ];
 
@@ -486,18 +499,21 @@ fn kat_ed25519(backend: &dyn CryptoBackend) -> SelfTestResult {
         secret_key[32..].copy_from_slice(&expected_public);
 
         // Step 1: Sign with known key
-        let sig = backend.ed25519_sign(&secret_key, &message)
+        let sig = backend
+            .ed25519_sign(&secret_key, &message)
             .map_err(|e| format!("sign failed: {}", e))?;
 
         if sig != expected_sig {
             return Err(format!(
                 "signature mismatch: got {:02x?}..., expected {:02x?}...",
-                &sig[..8], &expected_sig[..8]
+                &sig[..8],
+                &expected_sig[..8]
             ));
         }
 
         // Step 2: Verify
-        let valid = backend.ed25519_verify(&expected_public, &message, &sig)
+        let valid = backend
+            .ed25519_verify(&expected_public, &message, &sig)
             .map_err(|e| format!("verify failed: {}", e))?;
 
         if !valid {
@@ -505,7 +521,8 @@ fn kat_ed25519(backend: &dyn CryptoBackend) -> SelfTestResult {
         }
 
         // Step 3: Verify with wrong message — must fail
-        let invalid = backend.ed25519_verify(&expected_public, b"wrong", &sig)
+        let invalid = backend
+            .ed25519_verify(&expected_public, b"wrong", &sig)
             .map_err(|e| format!("verify-wrong failed: {}", e))?;
 
         if invalid {
@@ -532,30 +549,25 @@ fn kat_hkdf_sha256(backend: &dyn CryptoBackend) -> SelfTestResult {
         // RFC 5869 Test Case 1
         let ikm: [u8; 22] = [0x0b; 22];
         let salt: [u8; 13] = [
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-            0x08, 0x09, 0x0a, 0x0b, 0x0c,
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
         ];
-        let info: [u8; 10] = [
-            0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7,
-            0xf8, 0xf9,
-        ];
+        let info: [u8; 10] = [0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9];
         let expected_okm: [u8; 42] = [
-            0x3c, 0xb2, 0x5f, 0x25, 0xfa, 0xac, 0xd5, 0x7a,
-            0x90, 0x43, 0x4f, 0x64, 0xd0, 0x36, 0x2f, 0x2a,
-            0x2d, 0x2d, 0x0a, 0x90, 0xcf, 0x1a, 0x5a, 0x4c,
-            0x5d, 0xb0, 0x2d, 0x56, 0xec, 0xc4, 0xc5, 0xbf,
-            0x34, 0x00, 0x72, 0x08, 0xd5, 0xb8, 0x87, 0x18,
-            0x58, 0x65,
+            0x3c, 0xb2, 0x5f, 0x25, 0xfa, 0xac, 0xd5, 0x7a, 0x90, 0x43, 0x4f, 0x64, 0xd0, 0x36,
+            0x2f, 0x2a, 0x2d, 0x2d, 0x0a, 0x90, 0xcf, 0x1a, 0x5a, 0x4c, 0x5d, 0xb0, 0x2d, 0x56,
+            0xec, 0xc4, 0xc5, 0xbf, 0x34, 0x00, 0x72, 0x08, 0xd5, 0xb8, 0x87, 0x18, 0x58, 0x65,
         ];
 
         let mut okm = [0u8; 42];
-        backend.hkdf_sha256(&salt, &ikm, &info, &mut okm)
+        backend
+            .hkdf_sha256(&salt, &ikm, &info, &mut okm)
             .map_err(|e| format!("HKDF failed: {}", e))?;
 
         if okm != expected_okm {
             return Err(format!(
                 "OKM mismatch: got {:02x?}..., expected {:02x?}...",
-                &okm[..8], &expected_okm[..8]
+                &okm[..8],
+                &expected_okm[..8]
             ));
         }
 
@@ -586,7 +598,8 @@ fn crngt_initial(backend: &dyn CryptoBackend) -> SelfTestResult {
     let result = (|| -> Result<(), String> {
         // Generate multiple blocks and verify none are identical to the previous
         let mut prev = [0u8; 32];
-        backend.random_bytes(&mut prev)
+        backend
+            .random_bytes(&mut prev)
             .map_err(|e| format!("first random_bytes failed: {}", e))?;
 
         // All zeros is suspicious but not impossible — check multiple times
@@ -594,7 +607,8 @@ fn crngt_initial(backend: &dyn CryptoBackend) -> SelfTestResult {
 
         for i in 1..10 {
             let mut current = [0u8; 32];
-            backend.random_bytes(&mut current)
+            backend
+                .random_bytes(&mut current)
                 .map_err(|e| format!("random_bytes iteration {} failed: {}", i, e))?;
 
             if current == prev {
@@ -641,7 +655,7 @@ pub fn crngt_runtime_check(backend: &dyn CryptoBackend) -> CryptoResult<()> {
         MODULE_STATE.store(ModuleState::Error as u8, Ordering::SeqCst);
         tracing::error!("CRNGT runtime failure: consecutive random blocks identical. Module entering error state.");
         return Err(crate::crypto::CryptoError::Internal(
-            "CRNGT failure: entropy source produced identical consecutive blocks".to_string()
+            "CRNGT failure: entropy source produced identical consecutive blocks".to_string(),
         ));
     }
 
@@ -664,13 +678,16 @@ fn pct_mlkem768(backend: &dyn CryptoBackend) -> SelfTestResult {
     let name = "ML-KEM-768 PCT (keygen consistency)".to_string();
 
     let result = (|| -> Result<(), String> {
-        let (pk, sk) = backend.mlkem_keygen()
+        let (pk, sk) = backend
+            .mlkem_keygen()
             .map_err(|e| format!("keygen failed: {}", e))?;
 
-        let (ct, ss_enc) = backend.mlkem_encaps(&pk)
+        let (ct, ss_enc) = backend
+            .mlkem_encaps(&pk)
             .map_err(|e| format!("encaps failed: {}", e))?;
 
-        let ss_dec = backend.mlkem_decaps(&sk, &ct)
+        let ss_dec = backend
+            .mlkem_decaps(&sk, &ct)
             .map_err(|e| format!("decaps failed: {}", e))?;
 
         if ss_enc.as_bytes() != ss_dec.as_bytes() {
@@ -696,13 +713,16 @@ fn pct_mldsa65(backend: &dyn CryptoBackend) -> SelfTestResult {
     const PCT_MESSAGE: &[u8] = b"DyberVPN FIPS 140-3 ML-DSA-65 PCT";
 
     let result = (|| -> Result<(), String> {
-        let (pk, sk) = backend.mldsa_keygen()
+        let (pk, sk) = backend
+            .mldsa_keygen()
             .map_err(|e| format!("keygen failed: {}", e))?;
 
-        let sig = backend.mldsa_sign(&sk, PCT_MESSAGE)
+        let sig = backend
+            .mldsa_sign(&sk, PCT_MESSAGE)
             .map_err(|e| format!("sign failed: {}", e))?;
 
-        let valid = backend.mldsa_verify(&pk, PCT_MESSAGE, &sig)
+        let valid = backend
+            .mldsa_verify(&pk, PCT_MESSAGE, &sig)
             .map_err(|e| format!("verify failed: {}", e))?;
 
         if !valid {
@@ -728,13 +748,16 @@ fn pct_ed25519(backend: &dyn CryptoBackend) -> SelfTestResult {
     const PCT_MESSAGE: &[u8] = b"DyberVPN FIPS 140-3 Ed25519 PCT";
 
     let result = (|| -> Result<(), String> {
-        let (pk, sk) = backend.ed25519_keygen()
+        let (pk, sk) = backend
+            .ed25519_keygen()
             .map_err(|e| format!("keygen failed: {}", e))?;
 
-        let sig = backend.ed25519_sign(&sk, PCT_MESSAGE)
+        let sig = backend
+            .ed25519_sign(&sk, PCT_MESSAGE)
             .map_err(|e| format!("sign failed: {}", e))?;
 
-        let valid = backend.ed25519_verify(&pk, PCT_MESSAGE, &sig)
+        let valid = backend
+            .ed25519_verify(&pk, PCT_MESSAGE, &sig)
             .map_err(|e| format!("verify failed: {}", e))?;
 
         if !valid {
@@ -808,10 +831,15 @@ mod tests {
 
         println!("{}", report);
 
-        assert!(report.passed, "Self-tests should pass: {:?}",
-            report.results.iter()
+        assert!(
+            report.passed,
+            "Self-tests should pass: {:?}",
+            report
+                .results
+                .iter()
                 .filter(|r| !r.passed)
-                .collect::<Vec<_>>());
+                .collect::<Vec<_>>()
+        );
         assert_eq!(report.module_state, ModuleState::Operational);
         assert!(is_operational());
     }

@@ -12,8 +12,8 @@ use crate::control;
 use crate::error::{BrokerError, BrokerResult};
 use crate::peer::{BrokerPeer, PeerRole};
 use crate::registry::ServiceRegistry;
-use boringtun::noise::{Tunn, TunnResult, HybridHandshakeState, Packet};
 use boringtun::noise::handshake::parse_handshake_anon;
+use boringtun::noise::{HybridHandshakeState, Packet, Tunn, TunnResult};
 use dashmap::DashMap;
 use dybervpn_tunnel::audit::AuditLogger;
 use dybervpn_tunnel::policy::PolicyEngine;
@@ -146,7 +146,11 @@ impl Broker {
         let mut buf = vec![0u8; 65535];
 
         loop {
-            let (n, src) = self.socket.recv_from(&mut buf).await.map_err(BrokerError::Io)?;
+            let (n, src) = self
+                .socket
+                .recv_from(&mut buf)
+                .await
+                .map_err(BrokerError::Io)?;
 
             let packet = &buf[..n];
 
@@ -164,12 +168,7 @@ impl Broker {
     }
 
     /// Handle a packet from a known peer
-    async fn handle_known_peer_packet(
-        &self,
-        peer_key: [u8; 32],
-        src: SocketAddr,
-        packet: &[u8],
-    ) {
+    async fn handle_known_peer_packet(&self, peer_key: [u8; 32], src: SocketAddr, packet: &[u8]) {
         // We need to get the peer, decapsulate, then decide what to do
         let mut decap_buf = vec![0u8; 65535];
 
@@ -181,15 +180,20 @@ impl Broker {
             };
             peer_ref.touch();
             peer_ref.endpoint = src;
-            peer_ref.tunn.decapsulate(Some(src.ip()), packet, &mut decap_buf)
+            peer_ref
+                .tunn
+                .decapsulate(Some(src.ip()), packet, &mut decap_buf)
         };
 
         match result {
-            TunnResult::WriteToTunnelV4(plaintext, _) | TunnResult::WriteToTunnelV6(plaintext, _) => {
+            TunnResult::WriteToTunnelV4(plaintext, _)
+            | TunnResult::WriteToTunnelV6(plaintext, _) => {
                 let plaintext = plaintext.to_vec();
 
                 // Extract src/dst IP for routing and learn Client tunnel IPs
-                if let Some((src_ip, dst_ip, _, _)) = dybervpn_tunnel::policy::inspect_packet(&plaintext) {
+                if let Some((src_ip, dst_ip, _, _)) =
+                    dybervpn_tunnel::policy::inspect_packet(&plaintext)
+                {
                     // Learn the source tunnel IP → peer key mapping (for reverse routing)
                     self.client_ip_map.insert(src_ip, peer_key);
                     self.route_plaintext(&peer_key, dst_ip, &plaintext).await;
@@ -212,12 +216,7 @@ impl Broker {
     }
 
     /// Route a decrypted plaintext packet to the appropriate destination peer
-    async fn route_plaintext(
-        &self,
-        src_key: &[u8; 32],
-        dst_ip: IpAddr,
-        plaintext: &[u8],
-    ) {
+    async fn route_plaintext(&self, src_key: &[u8; 32], dst_ip: IpAddr, plaintext: &[u8]) {
         // Look up the Connector that serves this destination
         let dst_key = match self.registry.lookup(dst_ip) {
             Some(key) => key,
@@ -305,7 +304,11 @@ impl Broker {
 
         // Check capacity
         if self.peers.len() >= self.config.max_clients {
-            tracing::warn!("Max clients reached ({}), rejecting {}", self.config.max_clients, src);
+            tracing::warn!(
+                "Max clients reached ({}), rejecting {}",
+                self.config.max_clients,
+                src
+            );
             return;
         }
 
@@ -349,13 +352,22 @@ impl Broker {
         let mut tunn = if self.config.mode.uses_pq_kex() {
             let hs = HybridHandshakeState::new(self.config.mode);
             Tunn::new_hybrid(
-                broker_secret2, client_public,
-                None, Some(25), peer_idx, None, hs,
+                broker_secret2,
+                client_public,
+                None,
+                Some(25),
+                peer_idx,
+                None,
+                hs,
             )
         } else {
             Tunn::new(
-                broker_secret2, client_public,
-                None, Some(25), peer_idx, None,
+                broker_secret2,
+                client_public,
+                None,
+                Some(25),
+                peer_idx,
+                None,
             )
         };
 

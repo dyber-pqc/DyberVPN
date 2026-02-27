@@ -220,14 +220,21 @@ impl RevocationEngine {
         if let Some(path) = engine.crl_path.clone() {
             match engine.load_crl(&path) {
                 Ok(count) => {
-                    tracing::info!("Loaded CRL with {} revoked keys from {}", count, path.display());
+                    tracing::info!(
+                        "Loaded CRL with {} revoked keys from {}",
+                        count,
+                        path.display()
+                    );
                 }
                 Err(e) => {
                     // File might not exist yet, which is fine
                     if path.exists() {
                         tracing::error!("Failed to load CRL from {}: {}", path.display(), e);
                     } else {
-                        tracing::info!("CRL file {} does not exist yet (will be created on first revocation)", path.display());
+                        tracing::info!(
+                            "CRL file {} does not exist yet (will be created on first revocation)",
+                            path.display()
+                        );
                     }
                 }
             }
@@ -295,7 +302,9 @@ impl RevocationEngine {
     /// Register a peer as "first seen" for key age tracking
     pub fn register_peer(&mut self, peer_key: &[u8; 32]) {
         let fingerprint = hex::encode(&peer_key[..4]);
-        self.peer_first_seen.entry(fingerprint).or_insert_with(Instant::now);
+        self.peer_first_seen
+            .entry(fingerprint)
+            .or_insert_with(Instant::now);
     }
 
     /// Check if a key is revoked (convenience method for handshake path)
@@ -469,8 +478,8 @@ impl RevocationEngine {
             revoked_keys: entries,
         };
 
-        let json = serde_json::to_string_pretty(&crl)
-            .map_err(|e| format!("serialize CRL: {}", e))?;
+        let json =
+            serde_json::to_string_pretty(&crl).map_err(|e| format!("serialize CRL: {}", e))?;
 
         // Atomic write: write to temp file then rename
         let tmp_path = path.with_extension("tmp");
@@ -492,7 +501,8 @@ mod tests {
     /// Create a test engine with a unique temp CRL path so save_crl() works.
     /// Each call gets its own directory to avoid parallel test interference.
     fn test_engine(name: &str) -> (RevocationEngine, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("dybervpn-rev-{}-{}", name, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("dybervpn-rev-{}-{}", name, std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let crl_path = dir.join("test-crl.json");
         let config = SecurityConfig {
@@ -517,7 +527,12 @@ mod tests {
         assert!(!engine.is_revoked(&key));
 
         engine
-            .revoke_key(&key, Some("bob"), RevocationReason::EmployeeDeparted, Some("admin"))
+            .revoke_key(
+                &key,
+                Some("bob"),
+                RevocationReason::EmployeeDeparted,
+                Some("admin"),
+            )
             .unwrap();
 
         assert!(engine.is_revoked(&key));
@@ -538,7 +553,10 @@ mod tests {
             .unwrap();
 
         assert!(engine.is_revoked(&key));
-        assert!(matches!(engine.check_key(&key, None), KeyStatus::Suspended(_)));
+        assert!(matches!(
+            engine.check_key(&key, None),
+            KeyStatus::Suspended(_)
+        ));
 
         engine.reinstate_key(&key).unwrap();
         assert!(!engine.is_revoked(&key));
@@ -565,7 +583,12 @@ mod tests {
             .revoke_key(&key1, Some("alice"), RevocationReason::KeyCompromised, None)
             .unwrap();
         engine
-            .revoke_key(&key2, Some("bob"), RevocationReason::DeviceLost, Some("admin"))
+            .revoke_key(
+                &key2,
+                Some("bob"),
+                RevocationReason::DeviceLost,
+                Some("admin"),
+            )
             .unwrap();
 
         // Verify file exists and is valid JSON
@@ -587,10 +610,20 @@ mod tests {
     fn test_list_revoked() {
         let (mut engine, dir) = test_engine("list");
         engine
-            .revoke_key(&[0x11; 32], Some("a"), RevocationReason::Administrative, None)
+            .revoke_key(
+                &[0x11; 32],
+                Some("a"),
+                RevocationReason::Administrative,
+                None,
+            )
             .unwrap();
         engine
-            .revoke_key(&[0x22; 32], Some("b"), RevocationReason::PolicyViolation, None)
+            .revoke_key(
+                &[0x22; 32],
+                Some("b"),
+                RevocationReason::PolicyViolation,
+                None,
+            )
             .unwrap();
 
         let list = engine.list_revoked();
@@ -621,6 +654,9 @@ mod tests {
         // Roundtrip
         let parsed: RevocationList = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.revoked_keys.len(), 1);
-        assert_eq!(parsed.revoked_keys[0].reason, RevocationReason::EmployeeDeparted);
+        assert_eq!(
+            parsed.revoked_keys[0].reason,
+            RevocationReason::EmployeeDeparted
+        );
     }
 }

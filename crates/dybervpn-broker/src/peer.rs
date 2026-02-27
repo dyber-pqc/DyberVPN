@@ -54,12 +54,7 @@ pub struct BrokerPeer {
 
 impl BrokerPeer {
     /// Create a new BrokerPeer
-    pub fn new(
-        tunn: Tunn,
-        role: PeerRole,
-        endpoint: SocketAddr,
-        public_key: [u8; 32],
-    ) -> Self {
+    pub fn new(tunn: Tunn, role: PeerRole, endpoint: SocketAddr, public_key: [u8; 32]) -> Self {
         Self {
             tunn,
             role,

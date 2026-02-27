@@ -8,7 +8,7 @@ use crate::error::BrokerError;
 use crate::peer::{BrokerPeer, PeerRole};
 use crate::registry::ServiceRegistry;
 
-use boringtun::noise::{Tunn, HybridHandshakeState};
+use boringtun::noise::{HybridHandshakeState, Tunn};
 use dashmap::DashMap;
 use dybervpn_tunnel::audit::AuditLogger;
 use dybervpn_tunnel::connector::ControlMessage;
@@ -32,12 +32,9 @@ pub async fn run_control_plane(
 ) -> Result<(), BrokerError> {
     let listener = TcpListener::bind(config.listen_control)
         .await
-        .map_err(|e| BrokerError::Io(e))?;
+        .map_err(BrokerError::Io)?;
 
-    tracing::info!(
-        "Control plane listening on {}",
-        config.listen_control
-    );
+    tracing::info!("Control plane listening on {}", config.listen_control);
 
     loop {
         match listener.accept().await {
@@ -50,9 +47,10 @@ pub async fn run_control_plane(
                 let revocation = Arc::clone(&revocation);
 
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connector(
-                        stream, addr, config, peers, registry, audit, revocation,
-                    ).await {
+                    if let Err(e) =
+                        handle_connector(stream, addr, config, peers, registry, audit, revocation)
+                            .await
+                    {
                         tracing::warn!("Connector {} error: {}", addr, e);
                     }
                 });
@@ -104,10 +102,7 @@ async fn handle_connector(
 
                 // Check revocation
                 if revocation.is_revoked(&pk) {
-                    tracing::warn!(
-                        "Connector {} has revoked key",
-                        hex::encode(&pk[..4])
-                    );
+                    tracing::warn!("Connector {} has revoked key", hex::encode(&pk[..4]));
                     send_register_ack(&mut writer, false, "key revoked").await?;
                     continue;
                 }
@@ -154,13 +149,22 @@ async fn handle_connector(
                 let tunn = if config.mode.uses_pq_kex() {
                     let hs = HybridHandshakeState::new(config.mode);
                     Tunn::new_hybrid(
-                        broker_secret, connector_public,
-                        None, Some(25), peer_idx, None, hs,
+                        broker_secret,
+                        connector_public,
+                        None,
+                        Some(25),
+                        peer_idx,
+                        None,
+                        hs,
                     )
                 } else {
                     Tunn::new(
-                        broker_secret, connector_public,
-                        None, Some(25), peer_idx, None,
+                        broker_secret,
+                        connector_public,
+                        None,
+                        Some(25),
+                        peer_idx,
+                        None,
                     )
                 };
 
@@ -195,7 +199,10 @@ async fn handle_connector(
 
                 let ack = ControlMessage::HeartbeatAck { timestamp };
                 let json = serde_json::to_string(&ack).unwrap();
-                writer.write_all(json.as_bytes()).await.map_err(BrokerError::Io)?;
+                writer
+                    .write_all(json.as_bytes())
+                    .await
+                    .map_err(BrokerError::Io)?;
                 writer.write_all(b"\n").await.map_err(BrokerError::Io)?;
                 writer.flush().await.map_err(BrokerError::Io)?;
             }
@@ -215,10 +222,7 @@ async fn handle_connector(
     if let Some(key) = connector_key {
         registry.unregister(&key);
         peers.remove(&key);
-        tracing::info!(
-            "Connector {} cleaned up",
-            hex::encode(&key[..4])
-        );
+        tracing::info!("Connector {} cleaned up", hex::encode(&key[..4]));
     }
 
     Ok(())
@@ -239,7 +243,10 @@ async fn send_register_ack(
         },
     };
     let json = serde_json::to_string(&ack).unwrap();
-    writer.write_all(json.as_bytes()).await.map_err(BrokerError::Io)?;
+    writer
+        .write_all(json.as_bytes())
+        .await
+        .map_err(BrokerError::Io)?;
     writer.write_all(b"\n").await.map_err(BrokerError::Io)?;
     writer.flush().await.map_err(BrokerError::Io)?;
     Ok(())
@@ -266,6 +273,8 @@ fn parse_cidr(s: &str) -> Result<(IpAddr, u8), String> {
         return Err(format!("invalid CIDR: {}", s));
     }
     let ip: IpAddr = parts[0].parse().map_err(|e| format!("invalid IP: {}", e))?;
-    let prefix: u8 = parts[1].parse().map_err(|e| format!("invalid prefix: {}", e))?;
+    let prefix: u8 = parts[1]
+        .parse()
+        .map_err(|e| format!("invalid prefix: {}", e))?;
     Ok((ip, prefix))
 }

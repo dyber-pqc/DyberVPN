@@ -131,7 +131,7 @@ impl ReceivingKeyCounterValidator {
             }
         } else {
             let mut i = self.next;
-            while i % WORD_SIZE != 0 && i < counter {
+            while !i.is_multiple_of(WORD_SIZE) && i < counter {
                 // Clear until i aligned to word size
                 self.clear_bit(i);
                 i += 1;
@@ -187,7 +187,8 @@ impl Session {
     /// Set hybrid session keys (after PQ key exchange)
     pub(super) fn set_hybrid_keys(&mut self, sending_key: [u8; 32], receiving_key: [u8; 32]) {
         self.sender = LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &sending_key).unwrap());
-        self.receiver = LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &receiving_key).unwrap());
+        self.receiver =
+            LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &receiving_key).unwrap());
         // Reset counters for new keys
         self.sending_key_counter.store(0, Ordering::Relaxed);
         *self.receiving_key_counter.lock() = Default::default();

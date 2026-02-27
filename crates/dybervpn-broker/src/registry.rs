@@ -147,9 +147,21 @@ mod tests {
     #[test]
     fn test_ip_in_network() {
         let net = IpAddr::V4(Ipv4Addr::new(10, 1, 0, 0));
-        assert!(ip_in_network(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 1)), net, 16));
-        assert!(ip_in_network(IpAddr::V4(Ipv4Addr::new(10, 1, 255, 255)), net, 16));
-        assert!(!ip_in_network(IpAddr::V4(Ipv4Addr::new(10, 2, 0, 1)), net, 16));
+        assert!(ip_in_network(
+            IpAddr::V4(Ipv4Addr::new(10, 1, 0, 1)),
+            net,
+            16
+        ));
+        assert!(ip_in_network(
+            IpAddr::V4(Ipv4Addr::new(10, 1, 255, 255)),
+            net,
+            16
+        ));
+        assert!(!ip_in_network(
+            IpAddr::V4(Ipv4Addr::new(10, 2, 0, 1)),
+            net,
+            16
+        ));
     }
 
     #[test]
@@ -159,12 +171,8 @@ mod tests {
         let connector_a = [1u8; 32]; // serves 10.0.0.0/8
         let connector_b = [2u8; 32]; // serves 10.1.0.0/16
 
-        registry.register(connector_a, &[
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8),
-        ]);
-        registry.register(connector_b, &[
-            (IpAddr::V4(Ipv4Addr::new(10, 1, 0, 0)), 16),
-        ]);
+        registry.register(connector_a, &[(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8)]);
+        registry.register(connector_b, &[(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 0)), 16)]);
 
         // 10.1.0.5 matches both, but /16 is more specific
         let result = registry.lookup(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 5)));
@@ -183,14 +191,15 @@ mod tests {
     fn test_unregister() {
         let registry = ServiceRegistry::new();
         let key = [3u8; 32];
-        registry.register(key, &[
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8),
-        ]);
+        registry.register(key, &[(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8)]);
         assert_eq!(registry.route_count(), 1);
 
         registry.unregister(&key);
         assert_eq!(registry.route_count(), 0);
-        assert_eq!(registry.lookup(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))), None);
+        assert_eq!(
+            registry.lookup(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))),
+            None
+        );
     }
 
     #[test]
@@ -198,16 +207,17 @@ mod tests {
         let registry = ServiceRegistry::new();
         let key = [4u8; 32];
 
-        registry.register(key, &[
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8),
-            (IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0)), 12),
-        ]);
+        registry.register(
+            key,
+            &[
+                (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8),
+                (IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0)), 12),
+            ],
+        );
         assert_eq!(registry.route_count(), 2);
 
         // Re-register with different routes — old ones removed
-        registry.register(key, &[
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0)), 16),
-        ]);
+        registry.register(key, &[(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0)), 16)]);
         assert_eq!(registry.route_count(), 1);
         assert_eq!(
             registry.lookup(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))),

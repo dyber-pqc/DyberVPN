@@ -64,10 +64,7 @@ pub async fn start_metrics_server(
     config: MetricsServerConfig,
     state: Arc<RwLock<MetricsServerState>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use axum::{
-        routing::get,
-        Router,
-    };
+    use axum::{routing::get, Router};
 
     let app = Router::new()
         .route("/metrics", get(handle_metrics))

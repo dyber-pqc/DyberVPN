@@ -9,17 +9,17 @@
 
 #![warn(missing_docs)]
 
+pub mod health;
 pub mod logging;
 pub mod metrics;
-pub mod health;
 pub mod posture;
 #[cfg(feature = "server")]
 pub mod server;
 
 // Re-exports
+pub use health::{HealthCheck, HealthStatus};
 pub use logging::{init_logging, LogConfig};
 pub use metrics::{Metrics, MetricsConfig};
-pub use health::{HealthCheck, HealthStatus};
-pub use posture::{PostureConfig, PostureResult, PostureCheck, PostureCategory, assess_posture};
+pub use posture::{assess_posture, PostureCategory, PostureCheck, PostureConfig, PostureResult};
 #[cfg(feature = "server")]
-pub use server::{MetricsServerConfig, MetricsServerState, start_metrics_server};
+pub use server::{start_metrics_server, MetricsServerConfig, MetricsServerState};

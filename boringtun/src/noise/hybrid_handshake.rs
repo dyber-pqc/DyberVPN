@@ -11,8 +11,8 @@
 use std::convert::TryInto;
 
 use dybervpn_protocol::{
-    select_backend, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature,
-    MlKemCiphertext, MlKemPublicKey, MlKemSecretKey, OperatingMode,
+    select_backend, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlKemCiphertext,
+    MlKemPublicKey, MlKemSecretKey, OperatingMode,
 };
 
 /// ML-KEM-768 key sizes (NIST FIPS 203)
@@ -28,8 +28,8 @@ pub const MLDSA_SIGNATURE_SIZE: usize = 3309;
 
 /// Extended handshake message types for DyberVPN
 /// These use message type 5+ to avoid conflicts with standard WireGuard (1-4)
-pub const HANDSHAKE_INIT_PQ: u32 = 5;      // Hybrid mode (ML-KEM only, Ed25519 auth)
-pub const HANDSHAKE_RESP_PQ: u32 = 6;      // Hybrid mode response
+pub const HANDSHAKE_INIT_PQ: u32 = 5; // Hybrid mode (ML-KEM only, Ed25519 auth)
+pub const HANDSHAKE_RESP_PQ: u32 = 6; // Hybrid mode response
 pub const HANDSHAKE_INIT_PQ_AUTH: u32 = 7; // PQ-only mode (ML-KEM + ML-DSA auth)
 pub const HANDSHAKE_RESP_PQ_AUTH: u32 = 8; // PQ-only mode response
 
@@ -77,7 +77,10 @@ impl PqKeyPair {
             .map_err(|e| format!("Invalid public key: {}", e))?;
         let secret_key = MlKemSecretKey::from_bytes(secret_key)
             .map_err(|e| format!("Invalid secret key: {}", e))?;
-        Ok(Self { public_key, secret_key })
+        Ok(Self {
+            public_key,
+            secret_key,
+        })
     }
 }
 
@@ -118,41 +121,50 @@ impl MlDsaKeyPair {
             .map_err(|e| format!("Invalid ML-DSA public key: {}", e))?;
         let secret_key = MlDsaSecretKey::from_bytes(secret_key)
             .map_err(|e| format!("Invalid ML-DSA secret key: {}", e))?;
-        Ok(Self { public_key, secret_key })
+        Ok(Self {
+            public_key,
+            secret_key,
+        })
     }
-    
+
     /// Create from secret key bytes only (derives public key)
-    /// 
+    ///
     /// Note: ML-DSA secret keys contain the public key, so we can extract it.
     /// The ml-dsa crate's SecretKey includes the public key bytes.
     pub fn from_secret_key_bytes(secret_key_bytes: &[u8]) -> Result<Self, String> {
         let secret_key = MlDsaSecretKey::from_bytes(secret_key_bytes)
             .map_err(|e| format!("Invalid ML-DSA secret key: {}", e))?;
-        
+
         // ML-DSA-65 secret key format includes the public key
         // The public key is the last 1952 bytes of the 4032-byte secret key
         if secret_key_bytes.len() != MLDSA_SECRET_KEY_SIZE {
-            return Err(format!("Invalid secret key size: {} (expected {})", 
-                secret_key_bytes.len(), MLDSA_SECRET_KEY_SIZE));
+            return Err(format!(
+                "Invalid secret key size: {} (expected {})",
+                secret_key_bytes.len(),
+                MLDSA_SECRET_KEY_SIZE
+            ));
         }
-        
+
         // Extract public key from the end of the secret key
         // In ML-DSA, the secret key structure embeds the public key
         // The ml-dsa crate's SecretKey includes the public key bytes at the end
         let pk_offset = MLDSA_SECRET_KEY_SIZE - MLDSA_PUBLIC_KEY_SIZE;
         let pk_bytes = &secret_key_bytes[pk_offset..];
-        
+
         let public_key = MlDsaPublicKey::from_bytes(pk_bytes)
             .map_err(|e| format!("Failed to extract ML-DSA public key from secret key: {}", e))?;
-        
-        Ok(Self { public_key, secret_key })
+
+        Ok(Self {
+            public_key,
+            secret_key,
+        })
     }
-    
+
     /// Get the public key
     pub fn public_key(&self) -> &MlDsaPublicKey {
         &self.public_key
     }
-    
+
     /// Get the secret key
     pub fn secret_key(&self) -> &MlDsaSecretKey {
         &self.secret_key
@@ -211,7 +223,7 @@ pub struct HybridHandshakeState {
     pub pq_ciphertext: Option<MlKemCiphertext>,
     /// ML-KEM shared secret (derived during handshake)
     pub pq_shared_secret: Option<[u8; 32]>,
-    
+
     // ML-DSA-65 authentication (for pq-only mode)
     /// Our ML-DSA signing key pair
     pub mldsa_keypair: Option<MlDsaKeyPair>,
@@ -265,12 +277,12 @@ impl HybridHandshakeState {
     pub fn set_peer_public_key(&mut self, public_key: MlKemPublicKey) {
         self.peer_pq_public_key = Some(public_key);
     }
-    
+
     /// Set our ML-DSA signing key pair (for pq-only mode)
     pub fn set_mldsa_keypair(&mut self, keypair: MlDsaKeyPair) {
         self.mldsa_keypair = Some(keypair);
     }
-    
+
     /// Set peer's ML-DSA public key (for pq-only mode)
     pub fn set_peer_mldsa_public_key(&mut self, public_key: MlDsaPublicKey) {
         self.peer_mldsa_public_key = Some(public_key);
@@ -280,38 +292,42 @@ impl HybridHandshakeState {
     pub fn is_pq_enabled(&self) -> bool {
         self.mode.uses_pq_kex()
     }
-    
+
     /// Check if PQ authentication (ML-DSA) is enabled
     pub fn is_pq_auth_enabled(&self) -> bool {
         self.mode.uses_pq_auth()
     }
-    
+
     /// Add data to the handshake transcript (for signing)
     pub fn extend_transcript(&mut self, data: &[u8]) {
         self.handshake_transcript.extend_from_slice(data);
     }
-    
+
     /// Sign the handshake transcript with our ML-DSA key
     pub fn sign_transcript(&self) -> Result<MlDsaSignature, String> {
         if !self.is_pq_auth_enabled() {
             return Err("PQ auth not enabled".into());
         }
-        
-        let keypair = self.mldsa_keypair.as_ref()
+
+        let keypair = self
+            .mldsa_keypair
+            .as_ref()
             .ok_or("No ML-DSA keypair configured")?;
-        
+
         keypair.sign(&self.handshake_transcript)
     }
-    
+
     /// Verify peer's signature over the transcript
     pub fn verify_peer_signature(&self, signature: &MlDsaSignature) -> Result<bool, String> {
         if !self.is_pq_auth_enabled() {
             return Err("PQ auth not enabled".into());
         }
-        
-        let peer_pk = self.peer_mldsa_public_key.as_ref()
+
+        let peer_pk = self
+            .peer_mldsa_public_key
+            .as_ref()
             .ok_or("No peer ML-DSA public key configured")?;
-        
+
         mldsa_verify(peer_pk, &self.handshake_transcript, signature)
     }
 
@@ -491,9 +507,9 @@ impl<'a> HandshakeResponsePq<'a> {
 /// Format a PQ handshake init message
 /// This appends the ML-KEM public key to a standard WireGuard init
 pub fn format_handshake_init_pq(
-    classic_init: &[u8],     // 148 bytes
-    pq_ephemeral_pk: &[u8],  // 1184 bytes
-    dst: &mut [u8],          // Must be at least HANDSHAKE_INIT_PQ_SZ
+    classic_init: &[u8],    // 148 bytes
+    pq_ephemeral_pk: &[u8], // 1184 bytes
+    dst: &mut [u8],         // Must be at least HANDSHAKE_INIT_PQ_SZ
 ) -> Result<usize, &'static str> {
     if classic_init.len() != 148 {
         return Err("Invalid classic init size");
@@ -507,10 +523,10 @@ pub fn format_handshake_init_pq(
 
     // Copy classic init
     dst[..148].copy_from_slice(classic_init);
-    
+
     // Change message type to PQ variant
     dst[0..4].copy_from_slice(&HANDSHAKE_INIT_PQ.to_le_bytes());
-    
+
     // Append PQ public key
     dst[148..HANDSHAKE_INIT_PQ_SZ].copy_from_slice(pq_ephemeral_pk);
 
@@ -520,9 +536,9 @@ pub fn format_handshake_init_pq(
 /// Format a PQ handshake response message
 /// This appends the ML-KEM ciphertext to a standard WireGuard response
 pub fn format_handshake_response_pq(
-    classic_resp: &[u8],    // 92 bytes
-    pq_ciphertext: &[u8],   // 1088 bytes
-    dst: &mut [u8],         // Must be at least HANDSHAKE_RESP_PQ_SZ
+    classic_resp: &[u8],  // 92 bytes
+    pq_ciphertext: &[u8], // 1088 bytes
+    dst: &mut [u8],       // Must be at least HANDSHAKE_RESP_PQ_SZ
 ) -> Result<usize, &'static str> {
     if classic_resp.len() != 92 {
         return Err("Invalid classic response size");
@@ -536,10 +552,10 @@ pub fn format_handshake_response_pq(
 
     // Copy classic response
     dst[..92].copy_from_slice(classic_resp);
-    
+
     // Change message type to PQ variant
     dst[0..4].copy_from_slice(&HANDSHAKE_RESP_PQ.to_le_bytes());
-    
+
     // Append PQ ciphertext
     dst[92..HANDSHAKE_RESP_PQ_SZ].copy_from_slice(pq_ciphertext);
 
@@ -632,10 +648,10 @@ impl<'a> HandshakeResponsePqAuth<'a> {
 
 /// Format a PQ-only handshake init message (with ML-DSA signature)
 pub fn format_handshake_init_pq_auth(
-    classic_init: &[u8],     // 148 bytes
-    pq_ephemeral_pk: &[u8],  // 1184 bytes
-    mldsa_signature: &[u8],  // 3309 bytes
-    dst: &mut [u8],          // Must be at least HANDSHAKE_INIT_PQ_AUTH_SZ
+    classic_init: &[u8],    // 148 bytes
+    pq_ephemeral_pk: &[u8], // 1184 bytes
+    mldsa_signature: &[u8], // 3309 bytes
+    dst: &mut [u8],         // Must be at least HANDSHAKE_INIT_PQ_AUTH_SZ
 ) -> Result<usize, &'static str> {
     if classic_init.len() != 148 {
         return Err("Invalid classic init size");
@@ -652,14 +668,14 @@ pub fn format_handshake_init_pq_auth(
 
     // Copy classic init
     dst[..148].copy_from_slice(classic_init);
-    
+
     // Change message type to PQ-auth variant
     dst[0..4].copy_from_slice(&HANDSHAKE_INIT_PQ_AUTH.to_le_bytes());
-    
+
     // Append PQ public key
     let pq_pk_end = 148 + MLKEM_PUBLIC_KEY_SIZE;
     dst[148..pq_pk_end].copy_from_slice(pq_ephemeral_pk);
-    
+
     // Append ML-DSA signature
     dst[pq_pk_end..HANDSHAKE_INIT_PQ_AUTH_SZ].copy_from_slice(mldsa_signature);
 
@@ -668,10 +684,10 @@ pub fn format_handshake_init_pq_auth(
 
 /// Format a PQ-only handshake response message (with ML-DSA signature)
 pub fn format_handshake_response_pq_auth(
-    classic_resp: &[u8],     // 92 bytes
-    pq_ciphertext: &[u8],    // 1088 bytes
-    mldsa_signature: &[u8],  // 3309 bytes
-    dst: &mut [u8],          // Must be at least HANDSHAKE_RESP_PQ_AUTH_SZ
+    classic_resp: &[u8],    // 92 bytes
+    pq_ciphertext: &[u8],   // 1088 bytes
+    mldsa_signature: &[u8], // 3309 bytes
+    dst: &mut [u8],         // Must be at least HANDSHAKE_RESP_PQ_AUTH_SZ
 ) -> Result<usize, &'static str> {
     if classic_resp.len() != 92 {
         return Err("Invalid classic response size");
@@ -688,14 +704,14 @@ pub fn format_handshake_response_pq_auth(
 
     // Copy classic response
     dst[..92].copy_from_slice(classic_resp);
-    
+
     // Change message type to PQ-auth variant
     dst[0..4].copy_from_slice(&HANDSHAKE_RESP_PQ_AUTH.to_le_bytes());
-    
+
     // Append PQ ciphertext
     let ct_end = 92 + MLKEM_CIPHERTEXT_SIZE;
     dst[92..ct_end].copy_from_slice(pq_ciphertext);
-    
+
     // Append ML-DSA signature
     dst[ct_end..HANDSHAKE_RESP_PQ_AUTH_SZ].copy_from_slice(mldsa_signature);
 
@@ -762,8 +778,7 @@ mod tests {
         assert_eq!(combined, combined2);
 
         // Different inputs should produce different outputs
-        let different =
-            HybridHandshakeState::combine_secrets(&[4u8; 32], &mlkem_ss, &chaining_key);
+        let different = HybridHandshakeState::combine_secrets(&[4u8; 32], &mlkem_ss, &chaining_key);
         assert_ne!(combined, different);
     }
 
@@ -782,11 +797,11 @@ mod tests {
 
         let size = format_handshake_init_pq(&classic_init, &pq_pk, &mut dst).unwrap();
         assert_eq!(size, HANDSHAKE_INIT_PQ_SZ);
-        
+
         // Check message type was updated
         let msg_type = u32::from_le_bytes(dst[0..4].try_into().unwrap());
         assert_eq!(msg_type, HANDSHAKE_INIT_PQ);
-        
+
         // Check PQ key was appended
         assert_eq!(&dst[148..], &pq_pk[..]);
     }
@@ -799,11 +814,11 @@ mod tests {
 
         let size = format_handshake_response_pq(&classic_resp, &pq_ct, &mut dst).unwrap();
         assert_eq!(size, HANDSHAKE_RESP_PQ_SZ);
-        
+
         // Check message type was updated
         let msg_type = u32::from_le_bytes(dst[0..4].try_into().unwrap());
         assert_eq!(msg_type, HANDSHAKE_RESP_PQ);
-        
+
         // Check ciphertext was appended
         assert_eq!(&dst[92..], &pq_ct[..]);
     }
@@ -819,10 +834,10 @@ mod tests {
     fn test_mldsa_sign_verify() {
         let keypair = MlDsaKeyPair::generate().unwrap();
         let message = b"test handshake transcript";
-        
+
         let signature = keypair.sign(message).unwrap();
         assert_eq!(signature.as_bytes().len(), MLDSA_SIGNATURE_SIZE);
-        
+
         let valid = keypair.verify(message, &signature).unwrap();
         assert!(valid);
     }
@@ -832,26 +847,25 @@ mod tests {
         let mut state = HybridHandshakeState::new(OperatingMode::PqOnly);
         assert!(state.is_pq_enabled());
         assert!(state.is_pq_auth_enabled());
-        
+
         // Set up ML-DSA keys
         let keypair = MlDsaKeyPair::generate().unwrap();
         state.set_mldsa_keypair(keypair);
-        
+
         // Simulate handshake transcript
         state.extend_transcript(b"init message");
         state.extend_transcript(b"response message");
-        
+
         // Sign transcript
         let signature = state.sign_transcript().unwrap();
-        
+
         // Create peer state to verify
         let mut peer_state = HybridHandshakeState::new(OperatingMode::PqOnly);
-        peer_state.set_peer_mldsa_public_key(
-            state.mldsa_keypair.as_ref().unwrap().public_key.clone()
-        );
+        peer_state
+            .set_peer_mldsa_public_key(state.mldsa_keypair.as_ref().unwrap().public_key.clone());
         peer_state.extend_transcript(b"init message");
         peer_state.extend_transcript(b"response message");
-        
+
         let valid = peer_state.verify_peer_signature(&signature).unwrap();
         assert!(valid);
     }
@@ -859,39 +873,32 @@ mod tests {
     #[test]
     fn test_full_pq_handshake_flow() {
         // This simulates the complete PQ handshake flow
-        
+
         // 1. Initiator generates ephemeral PQ keypair
         let mut initiator = HybridHandshakeState::new(OperatingMode::Hybrid);
         let initiator_pk = initiator.generate_ephemeral().unwrap();
         let initiator_pk_bytes = initiator_pk.as_bytes().to_vec();
-        
+
         // 2. Responder receives init, encapsulates to initiator's ephemeral PQ key
         let mut responder = HybridHandshakeState::new(OperatingMode::Hybrid);
-        let (ciphertext, responder_pq_ss) = responder
-            .encapsulate_to_peer(&initiator_pk_bytes)
-            .unwrap();
-        
+        let (ciphertext, responder_pq_ss) =
+            responder.encapsulate_to_peer(&initiator_pk_bytes).unwrap();
+
         // 3. Initiator receives response, decapsulates
         let initiator_pq_ss = initiator.decapsulate(&ciphertext).unwrap();
-        
+
         // 4. Both sides now have matching PQ shared secrets
         assert_eq!(initiator_pq_ss, responder_pq_ss);
-        
+
         // 5. Combine with X25519 shared secret (simulated)
         let x25519_ss = [0x42u8; 32];
         let chaining_key = [0x00u8; 32];
-        
-        let initiator_combined = HybridHandshakeState::combine_secrets(
-            &x25519_ss,
-            &initiator_pq_ss,
-            &chaining_key,
-        );
-        let responder_combined = HybridHandshakeState::combine_secrets(
-            &x25519_ss,
-            &responder_pq_ss,
-            &chaining_key,
-        );
-        
+
+        let initiator_combined =
+            HybridHandshakeState::combine_secrets(&x25519_ss, &initiator_pq_ss, &chaining_key);
+        let responder_combined =
+            HybridHandshakeState::combine_secrets(&x25519_ss, &responder_pq_ss, &chaining_key);
+
         assert_eq!(initiator_combined, responder_combined);
     }
 
@@ -997,7 +1004,8 @@ mod tests {
         let signature = vec![0x55u8; MLDSA_SIGNATURE_SIZE];
 
         let mut dst = vec![0u8; HANDSHAKE_INIT_PQ_AUTH_SZ];
-        let size = format_handshake_init_pq_auth(&classic_init, &pq_pk, &signature, &mut dst).unwrap();
+        let size =
+            format_handshake_init_pq_auth(&classic_init, &pq_pk, &signature, &mut dst).unwrap();
         assert_eq!(size, HANDSHAKE_INIT_PQ_AUTH_SZ);
 
         let parsed = HandshakeInitPqAuth::parse(&dst).unwrap();
@@ -1026,7 +1034,8 @@ mod tests {
         let signature = vec![0x99u8; MLDSA_SIGNATURE_SIZE];
 
         let mut dst = vec![0u8; HANDSHAKE_RESP_PQ_AUTH_SZ];
-        let size = format_handshake_response_pq_auth(&classic_resp, &pq_ct, &signature, &mut dst).unwrap();
+        let size =
+            format_handshake_response_pq_auth(&classic_resp, &pq_ct, &signature, &mut dst).unwrap();
         assert_eq!(size, HANDSHAKE_RESP_PQ_AUTH_SZ);
 
         let parsed = HandshakeResponsePqAuth::parse(&dst).unwrap();
@@ -1068,7 +1077,7 @@ mod tests {
         // Build initiator transcript (as done in format_handshake_initiation)
         let mut initiator_transcript = Vec::with_capacity(148 + MLKEM_PUBLIC_KEY_SIZE);
         initiator_transcript.extend_from_slice(&classic_init[..116]); // before MACs
-        initiator_transcript.extend_from_slice(&[0u8; 32]);           // zero MACs
+        initiator_transcript.extend_from_slice(&[0u8; 32]); // zero MACs
         initiator_transcript.extend_from_slice(&pq_pk);
 
         // Build responder transcript (as done in handle_handshake_init_pq_auth)
@@ -1083,8 +1092,10 @@ mod tests {
         responder_transcript.extend_from_slice(&pq_pk);
 
         // Both transcripts must be byte-identical
-        assert_eq!(initiator_transcript, responder_transcript,
-            "Initiator and responder must produce identical transcripts with zeroed MACs");
+        assert_eq!(
+            initiator_transcript, responder_transcript,
+            "Initiator and responder must produce identical transcripts with zeroed MACs"
+        );
         assert_eq!(initiator_transcript.len(), 148 + MLKEM_PUBLIC_KEY_SIZE);
     }
 
@@ -1101,7 +1112,11 @@ mod tests {
         let ephemeral = [0x42u8; 32];
         let enc_static = [0xAA; 48];
         let enc_timestamp = [0xBB; 28];
-        let pq_pk = PqKeyPair::generate().unwrap().public_key.as_bytes().to_vec();
+        let pq_pk = PqKeyPair::generate()
+            .unwrap()
+            .public_key
+            .as_bytes()
+            .to_vec();
 
         // Initiator builds and signs transcript
         let mut transcript = Vec::new();
@@ -1127,21 +1142,18 @@ mod tests {
         responder_transcript.extend_from_slice(&pq_pk);
 
         // Verify using initiator's public key
-        let valid = mldsa_verify(
-            initiator_kp.public_key(),
-            &responder_transcript,
-            &signature,
-        ).unwrap();
-        assert!(valid, "Responder must be able to verify initiator's signature");
+        let valid =
+            mldsa_verify(initiator_kp.public_key(), &responder_transcript, &signature).unwrap();
+        assert!(
+            valid,
+            "Responder must be able to verify initiator's signature"
+        );
 
         // Also verify that a wrong transcript fails
         let mut wrong_transcript = responder_transcript.clone();
         wrong_transcript[10] ^= 0xFF; // flip a byte
-        let invalid = mldsa_verify(
-            initiator_kp.public_key(),
-            &wrong_transcript,
-            &signature,
-        ).unwrap();
+        let invalid =
+            mldsa_verify(initiator_kp.public_key(), &wrong_transcript, &signature).unwrap();
         assert!(!invalid, "Modified transcript must fail verification");
 
         // Verify that wrong key fails
@@ -1149,7 +1161,8 @@ mod tests {
             responder_kp.public_key(), // wrong key
             &responder_transcript,
             &signature,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(!wrong_valid, "Wrong key must fail verification");
     }
 
@@ -1220,15 +1233,16 @@ mod tests {
         init_transcript.extend_from_slice(&pq_ct);
 
         // Both transcripts must match
-        assert_eq!(resp_transcript, init_transcript,
-            "Responder and initiator must produce identical response transcripts");
+        assert_eq!(
+            resp_transcript, init_transcript,
+            "Responder and initiator must produce identical response transcripts"
+        );
 
         // Initiator verifies responder's signature
-        let valid = mldsa_verify(
-            responder_kp.public_key(),
-            &init_transcript,
-            &signature,
-        ).unwrap();
-        assert!(valid, "Initiator must verify responder's response signature");
+        let valid = mldsa_verify(responder_kp.public_key(), &init_transcript, &signature).unwrap();
+        assert!(
+            valid,
+            "Initiator must verify responder's response signature"
+        );
     }
 }

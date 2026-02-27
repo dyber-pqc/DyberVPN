@@ -32,15 +32,15 @@ fn constant_time_compare(a: &[u8], b: &[u8]) -> Result<(), ()> {
     if a.len() != b.len() {
         return Err(());
     }
-    
+
     let mut result = 0u8;
     for (x, y) in a.iter().zip(b.iter()) {
         result |= x ^ y;
     }
-    
+
     // Use volatile read to prevent compiler from optimizing
     let result = std::hint::black_box(result);
-    
+
     if result == 0 {
         Ok(())
     } else {
@@ -51,6 +51,7 @@ fn constant_time_compare(a: &[u8], b: &[u8]) -> Result<(), ()> {
 /// There are two places where WireGuard requires "randomness" for cookies
 /// * The 24 byte nonce in the cookie massage - here the only goal is to avoid nonce reuse
 /// * A secret value that changes every two minutes
+///
 /// Because the main goal of the cookie is simply for a party to prove ownership of an IP address
 /// we can relax the randomness definition a bit, in order to avoid locking, because using less
 /// resources is the main goal of any DoS prevention mechanism.

@@ -45,9 +45,8 @@ pub use config::{Config, ConfigError, InterfaceConfig, PeerConfig};
 pub use crypto::{select_backend, CryptoBackend, CryptoError, CryptoResult};
 pub use software::SoftwareBackend;
 pub use types::{
-    KeyError, MlKemCiphertext, MlKemPublicKey, MlKemSecretKey, 
-    MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature,
-    OperatingMode, SharedSecret,
+    KeyError, MlDsaPublicKey, MlDsaSecretKey, MlDsaSignature, MlKemCiphertext, MlKemPublicKey,
+    MlKemSecretKey, OperatingMode, SharedSecret,
 };
 
 /// Library version
