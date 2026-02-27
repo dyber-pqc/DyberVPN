@@ -695,6 +695,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "5.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
+dependencies = [
+ "cfg-if",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -754,6 +767,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
 
 [[package]]
+name = "dybervpn-broker"
+version = "0.1.4"
+dependencies = [
+ "anyhow",
+ "base64",
+ "boringtun",
+ "dashmap",
+ "dybervpn-protocol",
+ "dybervpn-tunnel",
+ "hex",
+ "ml-dsa",
+ "ml-kem",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "socket2 0.5.10",
+ "thiserror",
+ "tokio",
+ "tokio-test",
+ "toml",
+ "tracing",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "dybervpn-cli"
 version = "0.1.4"
 dependencies = [
@@ -762,6 +802,7 @@ dependencies = [
  "chrono",
  "clap 4.5.60",
  "ctrlc",
+ "dybervpn-broker",
  "dybervpn-protocol",
  "dybervpn-tunnel",
  "hex",
@@ -770,6 +811,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -827,6 +869,7 @@ dependencies = [
  "hostname",
  "humantime",
  "libc",
+ "rand_core 0.6.4",
  "serde",
  "serde_json",
  "socket2 0.5.10",
@@ -986,6 +1029,12 @@ dependencies = [
  "crunchy",
  "zerocopy",
 ]
+
+[[package]]
+name = "hashbrown"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
 name = "hashbrown"
@@ -1185,7 +1234,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
 dependencies = [
  "equivalent",
- "hashbrown",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]

@@ -285,6 +285,24 @@ enum Commands {
         #[arg(short, long)]
         json: bool,
     },
+
+    /// Run as a ZTNA Connector (outbound tunnel to a Broker)
+    Connect {
+        /// Connector configuration file path (TOML with [connector] section)
+        #[arg(short, long)]
+        config: PathBuf,
+
+        /// Operating mode override (hybrid, pq-only, classic)
+        #[arg(short, long)]
+        mode: Option<String>,
+    },
+
+    /// Run as a ZTNA Broker (relay between Clients and Connectors)
+    Broker {
+        /// Broker configuration file path
+        #[arg(short, long)]
+        config: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -325,6 +343,8 @@ fn main() -> Result<()> {
         Commands::ReinstateKey { config, peer } => cmd_reinstate_key(&config, &peer),
         Commands::ListRevoked { config, json } => cmd_list_revoked(&config, json),
         Commands::SelfTest { json } => cmd_self_test(json),
+        Commands::Connect { config, mode } => cmd_connect(&config, mode.as_deref()),
+        Commands::Broker { config } => cmd_broker(&config),
     }
 }
 
@@ -1031,6 +1051,46 @@ fn convert_config(config: &Config) -> Result<TunnelConfig> {
     
     let listen_port = config.interface.listen_port.unwrap_or(51820);
     
+    // Convert connector section if present
+    let connector = if let Some(ref conn) = config.connector {
+        use dybervpn_tunnel::ConnectorConfig;
+        let broker_endpoint: SocketAddr = conn.broker_endpoint.parse()
+            .context("Invalid connector.broker_endpoint")?;
+        let broker_control: SocketAddr = conn.broker_control.parse()
+            .context("Invalid connector.broker_control")?;
+        let broker_pk_bytes = base64::decode(&conn.broker_public_key)
+            .context("Invalid connector.broker_public_key base64")?;
+        let mut broker_public_key = [0u8; 32];
+        if broker_pk_bytes.len() != 32 {
+            anyhow::bail!("connector.broker_public_key must be 32 bytes");
+        }
+        broker_public_key.copy_from_slice(&broker_pk_bytes);
+        let broker_pq_public_key = conn.broker_pq_public_key.as_ref()
+            .map(|k| base64::decode(k))
+            .transpose()
+            .context("Invalid connector.broker_pq_public_key base64")?;
+        let broker_mldsa_public_key = conn.broker_mldsa_public_key.as_ref()
+            .map(|k| base64::decode(k))
+            .transpose()
+            .context("Invalid connector.broker_mldsa_public_key base64")?;
+        let advertised_routes: Vec<(IpAddr, u8)> = conn.advertised_routes.iter()
+            .map(|r| parse_cidr(r))
+            .collect::<Result<Vec<_>>>()?;
+        Some(ConnectorConfig {
+            broker_endpoint,
+            broker_control,
+            broker_public_key,
+            broker_pq_public_key,
+            broker_mldsa_public_key,
+            advertised_routes,
+            service_name: conn.service_name.clone(),
+            heartbeat_interval: std::time::Duration::from_secs(conn.heartbeat_interval),
+            auth_token: conn.auth_token.clone(),
+        })
+    } else {
+        None
+    };
+
     let mut tunnel_config = TunnelConfig {
         device_name: config.interface.name.clone(),
         private_key,
@@ -1046,6 +1106,7 @@ fn convert_config(config: &Config) -> Result<TunnelConfig> {
         keepalive_interval: Some(std::time::Duration::from_secs(25)),
         handshake_timeout: std::time::Duration::from_secs(5),
         verbose: false,
+        connector,
     };
     
     // Convert peers
@@ -2783,4 +2844,224 @@ fn cmd_self_test(json: bool) -> Result<()> {
     } else {
         anyhow::bail!("FIPS 140-3 self-tests FAILED")
     }
+}
+
+// ─── ZTNA Commands ──────────────────────────────────────────────────────────
+
+/// Run as a ZTNA Connector
+fn cmd_connect(config_path: &PathBuf, mode_override: Option<&str>) -> Result<()> {
+    let config_str = std::fs::read_to_string(config_path)
+        .context("Failed to read config file")?;
+
+    let config: Config = toml::from_str(&config_str)
+        .context("Failed to parse config file")?;
+
+    config.validate().context("Invalid configuration")?;
+
+    if config.connector.is_none() {
+        anyhow::bail!(
+            "Config file has no [connector] section. \
+             Use 'dybervpn up' for normal tunnel mode."
+        );
+    }
+
+    let mut tunnel_config = convert_config(&config)?;
+
+    // Apply mode override if specified
+    if let Some(mode_str) = mode_override {
+        let mode: OperatingMode = mode_str.parse().context("Invalid mode")?;
+        tunnel_config.mode = mode;
+    }
+
+    tracing::info!(
+        "Starting ZTNA Connector (mode={:?}, service={})",
+        tunnel_config.mode,
+        tunnel_config.connector.as_ref().map(|c| c.service_name.as_str()).unwrap_or("?"),
+    );
+
+    let mut daemon = Daemon::new(tunnel_config)
+        .context("Failed to create connector daemon")?;
+
+    daemon.set_config_path(config_path.to_path_buf());
+
+    // Enterprise subsystems (same as cmd_up)
+    if config.access_control.enabled {
+        use dybervpn_tunnel::policy::{PolicyConfig, RoleConfig, RuleConfig};
+        let policy_cfg = PolicyConfig {
+            enabled: true,
+            default_action: config.access_control.default_action.clone(),
+            policy_path: config.access_control.policy_path.clone(),
+            role: config.access_control.role.iter().map(|r| RoleConfig {
+                name: r.name.clone(),
+                peers: r.peers.clone(),
+                peer_keys: r.peer_keys.clone(),
+                rule: r.rule.iter().map(|ru| RuleConfig {
+                    action: ru.action.clone(),
+                    network: ru.network.clone(),
+                    ports: ru.ports.clone(),
+                    protocol: ru.protocol.clone(),
+                    description: ru.description.clone(),
+                }).collect(),
+            }).collect(),
+        };
+        daemon.set_policy(policy_cfg);
+    }
+
+    {
+        use dybervpn_tunnel::revocation::SecurityConfig as RevSecConfig;
+        let rev_cfg = RevSecConfig {
+            crl_path: config.security.crl_path.clone(),
+            key_max_age_hours: config.security.key_max_age_hours,
+            session_max_age_hours: config.security.session_max_age_hours,
+            check_interval_secs: config.security.check_interval_secs,
+            auto_disconnect_revoked: config.security.auto_disconnect_revoked,
+        };
+        daemon.set_revocation(rev_cfg);
+    }
+
+    if config.audit.enabled {
+        use dybervpn_tunnel::audit::{AuditConfig, EventCategory};
+        let categories: Vec<EventCategory> = config.audit.events.iter().filter_map(|s| {
+            match s.to_lowercase().as_str() {
+                "connection" => Some(EventCategory::Connection),
+                "handshake" => Some(EventCategory::Handshake),
+                "policy" => Some(EventCategory::Policy),
+                "key_management" => Some(EventCategory::KeyManagement),
+                "admin" => Some(EventCategory::Admin),
+                "enrollment" => Some(EventCategory::Enrollment),
+                "data_plane" | "dataplane" => Some(EventCategory::DataPlane),
+                "system" => Some(EventCategory::System),
+                "all" => None,
+                _ => { tracing::warn!("Unknown audit event category: {}", s); None }
+            }
+        }).collect();
+
+        let audit_cfg = AuditConfig {
+            enabled: true,
+            path: std::path::PathBuf::from(&config.audit.path),
+            max_size_bytes: config.audit.max_size_mb * 1024 * 1024,
+            rotate_count: config.audit.rotate_count,
+            log_data_packets: config.audit.log_data_packets,
+            categories,
+            interface_name: config.interface.name.clone(),
+        };
+        daemon.set_audit(audit_cfg);
+    }
+
+    // Signal handling
+    let shutdown_flag = daemon.shutdown_flag();
+    let shutdown_flag_clone = shutdown_flag.clone();
+    ctrlc::set_handler(move || {
+        tracing::info!("Received shutdown signal");
+        shutdown_flag_clone.store(true, Ordering::Relaxed);
+    }).context("Failed to set signal handler")?;
+
+    // Init and run (connector mode)
+    daemon.init().context("Failed to initialize connector")?;
+    daemon.run().context("Connector event loop failed")?;
+
+    Ok(())
+}
+
+/// Run as a ZTNA Broker
+fn cmd_broker(config_path: &PathBuf) -> Result<()> {
+    use dybervpn_broker::config::{BrokerConfig, BrokerConfigFile};
+    use dybervpn_broker::broker::Broker;
+    use dybervpn_tunnel::audit::AuditLogger;
+    use dybervpn_tunnel::policy::PolicyEngine;
+    use dybervpn_tunnel::revocation::RevocationEngine;
+
+    tracing::info!("Starting ZTNA Broker with config: {}", config_path.display());
+
+    let config_str = fs::read_to_string(config_path)
+        .context("Failed to read broker config file")?;
+    let config_file: BrokerConfigFile = toml::from_str(&config_str)
+        .context("Failed to parse broker config TOML")?;
+
+    let section = &config_file.broker;
+
+    // Decode private key
+    let pk_bytes = base64::decode(&section.private_key)
+        .context("Invalid base64 in broker private_key")?;
+    if pk_bytes.len() != 32 {
+        anyhow::bail!("Broker private_key must be 32 bytes");
+    }
+    let mut private_key = [0u8; 32];
+    private_key.copy_from_slice(&pk_bytes);
+
+    let listen_udp: SocketAddr = section.listen_udp.parse()
+        .context("Invalid listen_udp address")?;
+    let listen_control: SocketAddr = section.listen_control.parse()
+        .context("Invalid listen_control address")?;
+
+    let broker_config = BrokerConfig {
+        listen_udp,
+        listen_control,
+        private_key,
+        pq_private_key: section.pq_private_key.as_ref()
+            .and_then(|s| base64::decode(s).ok()),
+        mldsa_private_key: section.mldsa_private_key.as_ref()
+            .and_then(|s| base64::decode(s).ok()),
+        mode: section.mode,
+        policy_file: section.policy_file.as_ref().map(PathBuf::from),
+        crl_file: section.crl_file.as_ref().map(PathBuf::from),
+        audit_dir: section.audit_dir.as_ref().map(PathBuf::from),
+        max_clients: section.max_clients,
+        session_timeout: std::time::Duration::from_secs(section.session_timeout),
+        heartbeat_timeout: std::time::Duration::from_secs(section.heartbeat_timeout),
+    };
+
+    // Build enterprise subsystems
+    let policy = if let Some(ref path) = broker_config.policy_file {
+        use dybervpn_tunnel::policy::PolicyConfig;
+        PolicyEngine::new(&PolicyConfig {
+            enabled: true,
+            default_action: "deny".to_string(),
+            policy_path: Some(path.to_string_lossy().to_string()),
+            role: Vec::new(),
+        })
+    } else {
+        PolicyEngine::disabled()
+    };
+
+    let revocation = if let Some(ref path) = broker_config.crl_file {
+        use dybervpn_tunnel::revocation::SecurityConfig as RevSecConfig;
+        RevocationEngine::new(RevSecConfig {
+            crl_path: Some(path.to_string_lossy().to_string()),
+            ..RevSecConfig::default()
+        })
+    } else {
+        RevocationEngine::disabled()
+    };
+
+    let audit = if let Some(ref dir) = broker_config.audit_dir {
+        use dybervpn_tunnel::audit::AuditConfig;
+        fs::create_dir_all(dir).context("Failed to create audit directory")?;
+        AuditLogger::new(AuditConfig {
+            enabled: true,
+            path: dir.join("broker-audit.ndjson"),
+            ..AuditConfig::default()
+        })
+    } else {
+        AuditLogger::disabled()
+    };
+
+    // Run the Broker in a tokio runtime
+    let rt = tokio::runtime::Runtime::new()
+        .context("Failed to create tokio runtime")?;
+
+    rt.block_on(async {
+        let mut broker = Broker::new(broker_config).await
+            .map_err(|e| anyhow::anyhow!("Failed to create Broker: {}", e))?;
+
+        broker.set_policy(policy);
+        broker.set_revocation(revocation);
+        broker.set_audit(audit);
+
+        tracing::info!("ZTNA Broker running");
+        broker.run().await
+            .map_err(|e| anyhow::anyhow!("Broker error: {}", e))?;
+
+        Ok(())
+    })
 }

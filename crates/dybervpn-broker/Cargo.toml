@@ -1,39 +1,37 @@
 [package]
-name = "dybervpn-tunnel"
-description = "Cross-platform TUN/TAP tunnel management for DyberVPN"
+name = "dybervpn-broker"
+description = "ZTNA Broker for DyberVPN — relay between Clients and Connectors"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-[features]
-default = []
-
 [dependencies]
 dybervpn-protocol = { path = "../dybervpn-protocol" }
+dybervpn-tunnel = { path = "../dybervpn-tunnel" }
 boringtun = { path = "../../boringtun" }
 
 # Crypto
 x25519-dalek.workspace = true
+ml-kem.workspace = true
+ml-dsa.workspace = true
+sha2.workspace = true
+rand_core.workspace = true
 
 # Async runtime
 tokio.workspace = true
 
-# Logging
-tracing.workspace = true
-hex.workspace = true
-
-# Config parsing (for hot-reload)
-toml.workspace = true
-base64.workspace = true
-
-# Serialization (enrollment API)
+# Serialization
 serde.workspace = true
 serde_json.workspace = true
-chrono = "0.4"
-hostname = "0.4"
-humantime = "2.1"
+
+# Encoding
+base64.workspace = true
+hex.workspace = true
+
+# Logging
+tracing.workspace = true
 
 # Error handling
 thiserror.workspace = true
@@ -42,13 +40,13 @@ anyhow.workspace = true
 # Networking
 socket2.workspace = true
 
-# Platform-specific dependencies
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
+# Concurrent data structures
+dashmap = "5"
 
-[target.'cfg(windows)'.dependencies]
-wintun = "0.5"
+# Secure memory
+zeroize.workspace = true
 
 [dev-dependencies]
 tokio-test = "0.4"
 rand_core.workspace = true
+toml.workspace = true

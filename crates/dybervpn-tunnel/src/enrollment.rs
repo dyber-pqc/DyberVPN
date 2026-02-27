@@ -46,7 +46,7 @@ pub struct EnrollRequest {
 }
 
 /// Enrollment response to client
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EnrollResponse {
     /// Whether enrollment succeeded
     pub success: bool,
@@ -480,5 +480,258 @@ mod tests {
         assert_eq!(req.name, "laptop");
         assert_eq!(req.public_key, "abc123");
         assert_eq!(req.pq_public_key, Some("def456".to_string()));
+    }
+
+    // =========================================================================
+    // Integration tests — full enrollment server HTTP round-trip
+    // =========================================================================
+
+    /// Create a temp server config and EnrollmentConfig for tests.
+    /// Returns (config, config_path) where config_path is a temp file.
+    fn create_test_enrollment_config(token: &str) -> (EnrollmentConfig, std::path::PathBuf) {
+        // Generate a real X25519 private key
+        let server_secret = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
+        let server_private_b64 = base64::encode(server_secret.to_bytes());
+
+        // Write a minimal valid server config
+        let config_content = format!(
+            "[interface]\n\
+             private_key = \"{}\"\n\
+             listen_port = 51820\n\
+             address = \"10.200.200.1/24\"\n\
+             mode = \"classic\"\n",
+            server_private_b64,
+        );
+
+        let dir = std::env::temp_dir().join(format!("dybervpn-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("server.toml");
+        std::fs::write(&config_path, &config_content).unwrap();
+
+        // Bind to port 0 to get a random available port
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // Free the port for the enrollment server
+
+        let config = EnrollmentConfig {
+            listen_addr: addr,
+            token: token.to_string(),
+            server_config_path: config_path.clone(),
+            server_endpoint: "10.200.200.1:51820".to_string(),
+            reload_flag: Arc::new(AtomicBool::new(false)),
+        };
+
+        (config, config_path)
+    }
+
+    /// Send a raw HTTP request to the enrollment server
+    fn http_request(addr: SocketAddr, method: &str, path: &str, token: Option<&str>, body: Option<&str>) -> (u16, String) {
+        let mut stream = TcpStream::connect(addr).expect("connect to enrollment server");
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+
+        let body_bytes = body.unwrap_or("");
+        let mut request = format!(
+            "{} {} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\n",
+            method, path, addr, body_bytes.len(),
+        );
+        if let Some(t) = token {
+            request.push_str(&format!("Authorization: Bearer {}\r\n", t));
+        }
+        request.push_str("Content-Type: application/json\r\n\r\n");
+        request.push_str(body_bytes);
+
+        stream.write_all(request.as_bytes()).expect("send request");
+        stream.flush().ok();
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response).ok();
+
+        // Parse status code
+        let status = response.lines().next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0u16);
+
+        // Extract body (after \r\n\r\n)
+        let body = response.split("\r\n\r\n")
+            .nth(1)
+            .unwrap_or("")
+            .to_string();
+
+        (status, body)
+    }
+
+    #[test]
+    fn test_enrollment_server_health_check() {
+        let token = "test-token-health";
+        let (config, config_path) = create_test_enrollment_config(token);
+        let addr = config.listen_addr;
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = Arc::clone(&shutdown);
+
+        // Start server in background thread
+        let handle = std::thread::spawn(move || {
+            let mut server = EnrollmentServer::new(config, shutdown_clone);
+            server.run();
+        });
+
+        // Give server time to bind
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // Test GET /health (no auth required)
+        let (status, body) = http_request(addr, "GET", "/health", None, None);
+        assert_eq!(status, 200, "health check should return 200");
+        assert!(body.contains("ok"), "health check body: {}", body);
+
+        // Test 404 for unknown path
+        let (status, _body) = http_request(addr, "GET", "/nonexistent", None, None);
+        assert_eq!(status, 404);
+
+        // Shutdown
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().ok();
+        let _ = std::fs::remove_dir_all(config_path.parent().unwrap());
+    }
+
+    #[test]
+    fn test_enrollment_server_auth_required() {
+        let token = "test-token-auth";
+        let (config, config_path) = create_test_enrollment_config(token);
+        let addr = config.listen_addr;
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = Arc::clone(&shutdown);
+
+        let handle = std::thread::spawn(move || {
+            let mut server = EnrollmentServer::new(config, shutdown_clone);
+            server.run();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // POST /enroll without auth → 401
+        let body = r#"{"name":"laptop","public_key":"dGVzdA=="}"#;
+        let (status, resp) = http_request(addr, "POST", "/enroll", None, Some(body));
+        assert_eq!(status, 401, "no auth should be 401, got body: {}", resp);
+
+        // POST /enroll with wrong token → 401
+        let (status, _) = http_request(addr, "POST", "/enroll", Some("wrong-token"), Some(body));
+        assert_eq!(status, 401);
+
+        // GET /status without auth → 401
+        let (status, _) = http_request(addr, "GET", "/status", None, None);
+        assert_eq!(status, 401);
+
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().ok();
+        let _ = std::fs::remove_dir_all(config_path.parent().unwrap());
+    }
+
+    #[test]
+    fn test_enrollment_server_full_enroll() {
+        let token = "test-token-enroll";
+        let (config, config_path) = create_test_enrollment_config(token);
+        let addr = config.listen_addr;
+        let reload_flag = Arc::clone(&config.reload_flag);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = Arc::clone(&shutdown);
+
+        let handle = std::thread::spawn(move || {
+            let mut server = EnrollmentServer::new(config, shutdown_clone);
+            server.run();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // Generate a real client keypair
+        let client_secret = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
+        let client_public = x25519_dalek::PublicKey::from(&client_secret);
+        let client_public_b64 = base64::encode(client_public.as_bytes());
+
+        // Enroll a peer
+        let enroll_body = format!(
+            r#"{{"name":"test-laptop","public_key":"{}"}}"#,
+            client_public_b64,
+        );
+        let (status, resp_body) = http_request(addr, "POST", "/enroll", Some(token), Some(&enroll_body));
+        assert_eq!(status, 200, "enrollment should succeed, got: {}", resp_body);
+
+        let resp: EnrollResponse = serde_json::from_str(&resp_body)
+            .expect("enrollment response should be valid JSON");
+        assert!(resp.success, "enrollment should be successful");
+        assert_eq!(resp.assigned_ip, "10.200.200.2", "first client gets .2");
+        assert!(!resp.server_public_key.is_empty(), "server public key should be present");
+        assert_eq!(resp.mode, "classic");
+        assert!(resp.client_config.contains("test-laptop"), "config should contain peer name");
+        assert!(resp.client_config.contains("10.200.200.2"), "config should contain assigned IP");
+
+        // Verify reload flag was set
+        assert!(reload_flag.load(Ordering::Relaxed), "reload flag should be set after enrollment");
+
+        // Verify peer was appended to server config file
+        let updated_config = std::fs::read_to_string(&config_path).unwrap();
+        assert!(updated_config.contains(&client_public_b64), "server config should contain client key");
+        assert!(updated_config.contains("test-laptop"), "server config should contain peer name");
+        assert!(updated_config.contains("10.200.200.2/32"), "server config should contain assigned IP");
+
+        // Enroll a second peer — should get .3
+        let client2_secret = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
+        let client2_public = x25519_dalek::PublicKey::from(&client2_secret);
+        let client2_public_b64 = base64::encode(client2_public.as_bytes());
+        let enroll_body2 = format!(
+            r#"{{"name":"test-phone","public_key":"{}"}}"#,
+            client2_public_b64,
+        );
+        let (status2, resp_body2) = http_request(addr, "POST", "/enroll", Some(token), Some(&enroll_body2));
+        assert_eq!(status2, 200);
+        let resp2: EnrollResponse = serde_json::from_str(&resp_body2).unwrap();
+        assert_eq!(resp2.assigned_ip, "10.200.200.3", "second client gets .3");
+
+        // Duplicate name → 409
+        let (status_dup, _) = http_request(addr, "POST", "/enroll", Some(token), Some(&enroll_body));
+        assert_eq!(status_dup, 409, "duplicate name should be 409");
+
+        // GET /status should show 2 enrolled peers
+        let (status_s, status_body) = http_request(addr, "GET", "/status", Some(token), None);
+        assert_eq!(status_s, 200);
+        assert!(status_body.contains("\"enrolled_peers\":2"), "status: {}", status_body);
+
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().ok();
+        let _ = std::fs::remove_dir_all(config_path.parent().unwrap());
+    }
+
+    #[test]
+    fn test_enrollment_server_validation() {
+        let token = "test-token-validate";
+        let (config, config_path) = create_test_enrollment_config(token);
+        let addr = config.listen_addr;
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = Arc::clone(&shutdown);
+
+        let handle = std::thread::spawn(move || {
+            let mut server = EnrollmentServer::new(config, shutdown_clone);
+            server.run();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // Empty name → 400
+        let (status, _) = http_request(addr, "POST", "/enroll", Some(token),
+            Some(r#"{"name":"","public_key":"dGVzdA=="}"#));
+        assert_eq!(status, 400);
+
+        // Missing public_key → 400
+        let (status, _) = http_request(addr, "POST", "/enroll", Some(token),
+            Some(r#"{"name":"test","public_key":""}"#));
+        assert_eq!(status, 400);
+
+        // Invalid JSON → 400
+        let (status, _) = http_request(addr, "POST", "/enroll", Some(token),
+            Some(r#"not json at all"#));
+        assert_eq!(status, 400);
+
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().ok();
+        let _ = std::fs::remove_dir_all(config_path.parent().unwrap());
     }
 }

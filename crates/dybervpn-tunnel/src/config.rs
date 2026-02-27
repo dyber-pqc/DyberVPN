@@ -48,6 +48,9 @@ pub struct TunnelConfig {
     
     /// Enable logging
     pub verbose: bool,
+
+    /// Connector mode configuration (ZTNA)
+    pub connector: Option<ConnectorConfig>,
 }
 
 impl Default for TunnelConfig {
@@ -67,6 +70,7 @@ impl Default for TunnelConfig {
             keepalive_interval: Some(Duration::from_secs(25)),
             handshake_timeout: Duration::from_secs(5),
             verbose: false,
+            connector: None,
         }
     }
 }
@@ -148,6 +152,53 @@ impl PeerConfig {
     pub fn with_mldsa_public_key(mut self, key: Vec<u8>) -> Self {
         self.mldsa_public_key = Some(key);
         self
+    }
+}
+
+/// Configuration for connector mode (ZTNA)
+#[derive(Debug, Clone)]
+pub struct ConnectorConfig {
+    /// Broker's UDP endpoint (data plane)
+    pub broker_endpoint: SocketAddr,
+
+    /// Broker's control plane TCP address
+    pub broker_control: SocketAddr,
+
+    /// Broker's X25519 public key
+    pub broker_public_key: [u8; 32],
+
+    /// Broker's ML-KEM-768 public key (for hybrid/pq-only modes)
+    pub broker_pq_public_key: Option<Vec<u8>>,
+
+    /// Broker's ML-DSA-65 public key (for pq-only mode)
+    pub broker_mldsa_public_key: Option<Vec<u8>>,
+
+    /// CIDRs this connector exposes to the Broker
+    pub advertised_routes: Vec<(IpAddr, u8)>,
+
+    /// Human-readable service name
+    pub service_name: String,
+
+    /// Heartbeat interval for control plane
+    pub heartbeat_interval: Duration,
+
+    /// Pre-shared enrollment token (for initial registration)
+    pub auth_token: Option<String>,
+}
+
+impl Default for ConnectorConfig {
+    fn default() -> Self {
+        Self {
+            broker_endpoint: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 51820),
+            broker_control: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 51821),
+            broker_public_key: [0u8; 32],
+            broker_pq_public_key: None,
+            broker_mldsa_public_key: None,
+            advertised_routes: Vec::new(),
+            service_name: "default".to_string(),
+            heartbeat_interval: Duration::from_secs(30),
+            auth_token: None,
+        }
     }
 }
 

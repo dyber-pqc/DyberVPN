@@ -10,6 +10,7 @@ authors.workspace = true
 [features]
 default = ["prometheus"]
 prometheus = ["prometheus-client"]
+server = ["axum"]
 
 [dependencies]
 # Metrics

@@ -37,6 +37,10 @@ pub struct Config {
     #[serde(default)]
     pub audit: AuditLogConfig,
     
+    /// Connector mode configuration (ZTNA, optional)
+    #[serde(default)]
+    pub connector: Option<ConnectorSection>,
+
     /// Peer configurations
     #[serde(default)]
     pub peer: Vec<PeerConfig>,
@@ -285,6 +289,49 @@ impl Default for AuditLogConfig {
         }
     }
 }
+
+/// Connector mode configuration (ZTNA)
+///
+/// When present, the daemon runs as a Connector — it establishes an outbound
+/// WireGuard tunnel to a Broker and advertises local network routes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorSection {
+    /// Broker's UDP endpoint for data plane (host:port)
+    pub broker_endpoint: String,
+
+    /// Broker's TCP endpoint for control plane (host:port)
+    pub broker_control: String,
+
+    /// Broker's X25519 public key (base64)
+    pub broker_public_key: String,
+
+    /// Broker's ML-KEM-768 public key (base64, for hybrid/pq-only modes)
+    #[serde(default)]
+    pub broker_pq_public_key: Option<String>,
+
+    /// Broker's ML-DSA-65 public key (base64, for pq-only mode)
+    #[serde(default)]
+    pub broker_mldsa_public_key: Option<String>,
+
+    /// CIDRs this connector advertises (e.g., ["10.1.0.0/16", "192.168.1.0/24"])
+    #[serde(default)]
+    pub advertised_routes: Vec<String>,
+
+    /// Human-readable service name
+    #[serde(default = "default_service_name")]
+    pub service_name: String,
+
+    /// Heartbeat interval in seconds (default: 30)
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval: u64,
+
+    /// Pre-shared enrollment token (for initial registration)
+    #[serde(default)]
+    pub auth_token: Option<String>,
+}
+
+fn default_service_name() -> String { "default".to_string() }
+fn default_heartbeat_interval() -> u64 { 30 }
 
 /// Peer configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

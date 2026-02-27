@@ -8,6 +8,7 @@ members = [
     "crates/dybervpn-protocol",
     "crates/dybervpn-tunnel",
     "crates/dybervpn-metrics",
+    "crates/dybervpn-broker",
     "crates/dybervpn-cli",
 ]
 

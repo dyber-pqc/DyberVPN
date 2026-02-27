@@ -15,6 +15,7 @@ use crate::audit::{
     AuditConfig, AuditLogger, EventOutcome, EventType,
 };
 use crate::config::TunnelConfig;
+use crate::connector::ConnectorAgent;
 use crate::device::DeviceHandle;
 use crate::error::{TunnelError, TunnelResult};
 use crate::policy::{self, PolicyAction, PolicyConfig, PolicyEngine};
@@ -97,6 +98,10 @@ pub struct Daemon {
     next_peer_index: u32,
     /// Is this a server (has listen_port and multiple peers)?
     is_server: bool,
+    /// Running in connector mode (ZTNA — no TUN device)
+    connector_mode: bool,
+    /// Connector agent for control plane (when in connector mode)
+    connector_agent: Option<ConnectorAgent>,
 
     // ── Enterprise subsystems ────────────────────────────────────────
     /// Access control policy engine
@@ -123,10 +128,11 @@ impl Daemon {
     /// Create a new daemon
     pub fn new(config: TunnelConfig) -> TunnelResult<Self> {
         config.validate().map_err(TunnelError::Config)?;
-        
+
         let private_key = StaticSecret::from(config.private_key);
         let is_server = config.listen_addr.port() != 0 && config.peers.len() > 0;
-        
+        let connector_mode = config.connector.is_some();
+
         Ok(Self {
             config,
             config_path: None,
@@ -139,6 +145,8 @@ impl Daemon {
             private_key,
             next_peer_index: 0,
             is_server,
+            connector_mode,
+            connector_agent: None,
             policy: PolicyEngine::disabled(),
             revocation: RevocationEngine::disabled(),
             audit: AuditLogger::disabled(),
@@ -213,25 +221,90 @@ impl Daemon {
         if self.is_server {
             self.check_ip_forwarding();
         }
-        
-        let tun = DeviceHandle::create(&self.config.device_name)?;
-        tun.configure(self.config.address, self.config.netmask, self.config.mtu)?;
-        tracing::info!("TUN device {} configured with {}/{}", 
-            tun.name(), self.config.address, self.config.netmask);
-        self.tun = Some(tun);
-        
-        let listen_port = self.config.listen_addr.port();
-        let socket = Self::create_udp_socket(listen_port)?;
-        tracing::info!("UDP socket bound to port {}", listen_port);
-        self.socket = Some(socket);
-        
-        self.init_peers()?;
-        self.setup_routes()?;
-        
+
+        if self.connector_mode {
+            // ── Connector mode: no TUN device, ephemeral UDP port ──
+            tracing::info!("Running in ZTNA connector mode");
+            let connector_cfg = self.config.connector.clone().unwrap();
+
+            // Auto-create Broker as the sole peer (if not already in config)
+            if self.config.peers.is_empty() {
+                use crate::config::PeerConfig;
+                let mut broker_peer = PeerConfig::new(connector_cfg.broker_public_key);
+                broker_peer.endpoint = Some(connector_cfg.broker_endpoint);
+                // Connector allows all IPs through the Broker (0.0.0.0/0)
+                broker_peer.allowed_ips = vec![
+                    (IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                ];
+                broker_peer.persistent_keepalive = Some(25);
+                broker_peer.pq_public_key = connector_cfg.broker_pq_public_key.clone();
+                broker_peer.mldsa_public_key = connector_cfg.broker_mldsa_public_key.clone();
+                self.config.peers.push(broker_peer);
+            }
+
+            // Ephemeral UDP port (port 0)
+            let socket = Self::create_udp_socket(0)?;
+            let local_port = socket.local_addr()
+                .map(|a| a.port())
+                .unwrap_or(0);
+            tracing::info!("Connector UDP socket bound to ephemeral port {}", local_port);
+            self.socket = Some(socket);
+
+            self.init_peers()?;
+
+            // Connect control plane to Broker
+            match ConnectorAgent::new(&connector_cfg) {
+                Ok(agent) => {
+                    tracing::info!("Control plane connected to Broker");
+                    self.connector_agent = Some(agent);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to connect control plane: {}", e);
+                    return Err(TunnelError::Other(
+                        format!("Broker control plane connection failed: {}", e),
+                    ));
+                }
+            }
+
+            // Register with the Broker
+            if let Some(ref mut agent) = self.connector_agent {
+                let our_public_key = x25519_dalek::PublicKey::from(&self.private_key);
+                // TODO: generate ML-DSA signature for PQ auth
+                if let Err(e) = agent.register(our_public_key.as_bytes(), None) {
+                    tracing::error!("Broker registration failed: {}", e);
+                    return Err(TunnelError::Other(
+                        format!("Broker registration failed: {}", e),
+                    ));
+                }
+            }
+
+            let mode = format!("{:?}", self.config.mode).to_lowercase();
+            self.audit.log_admin_action(
+                EventType::DaemonStarted,
+                &format!("Connector mode started (mode={}, broker={})",
+                    mode, connector_cfg.broker_endpoint),
+            );
+        } else {
+            // ── Normal mode: create TUN device and bind listen port ──
+            let tun = DeviceHandle::create(&self.config.device_name)?;
+            tun.configure(self.config.address, self.config.netmask, self.config.mtu)?;
+            tracing::info!("TUN device {} configured with {}/{}",
+                tun.name(), self.config.address, self.config.netmask);
+            self.tun = Some(tun);
+
+            let listen_port = self.config.listen_addr.port();
+            let socket = Self::create_udp_socket(listen_port)?;
+            tracing::info!("UDP socket bound to port {}", listen_port);
+            self.socket = Some(socket);
+
+            self.init_peers()?;
+            self.setup_routes()?;
+        }
+
         // Audit: daemon started
         let mode = format!("{:?}", self.config.mode).to_lowercase();
         self.audit.log_daemon_started(&mode, self.peers.len());
-        
+
         Ok(())
     }
     
@@ -395,13 +468,77 @@ impl Daemon {
     
     /// Run the daemon (blocking)
     pub fn run(&mut self) -> TunnelResult<()> {
-        if self.tun.is_none() || self.socket.is_none() {
-            return Err(TunnelError::NotRunning);
+        if self.connector_mode {
+            // Connector mode: no TUN, only UDP + control plane
+            if self.socket.is_none() {
+                return Err(TunnelError::NotRunning);
+            }
+            self.run_connector_loop()
+        } else {
+            if self.tun.is_none() || self.socket.is_none() {
+                return Err(TunnelError::NotRunning);
+            }
+            #[cfg(unix)]
+            { self.run_poll_loop() }
+            #[cfg(not(unix))]
+            { self.run_busy_loop() }
         }
-        #[cfg(unix)]
-        { self.run_poll_loop() }
-        #[cfg(not(unix))]
-        { self.run_busy_loop() }
+    }
+
+    /// Connector mode event loop — UDP only, no TUN device
+    fn run_connector_loop(&mut self) -> TunnelResult<()> {
+        tracing::info!("Starting DyberVPN connector event loop");
+        let mut udp_buf = vec![0u8; MAX_UDP_SIZE];
+        let mut out_buf = vec![0u8; MAX_UDP_SIZE];
+        let mut last_timer = Instant::now();
+        let timer_interval = Duration::from_millis(TIMER_TICK_MS as u64);
+
+        self.initiate_handshakes(&mut out_buf);
+
+        tracing::info!(
+            "Connector loop running: {} peers, policy={}, audit={}",
+            self.peers.len(),
+            if self.policy.is_enabled() { "on" } else { "off" },
+            if self.audit.is_enabled() { "on" } else { "off" },
+        );
+
+        while !self.shutdown.load(Ordering::Relaxed) {
+            if last_timer.elapsed() >= timer_interval {
+                self.handle_timers(&mut out_buf);
+                last_timer = Instant::now();
+            }
+
+            // Process UDP packets from the Broker
+            match self.socket.as_ref().unwrap().recv_from(&mut udp_buf) {
+                Ok((n, src)) => self.handle_udp_packet(&udp_buf[..n], src, &mut out_buf),
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => { tracing::warn!("UDP read error: {}", e); }
+            }
+
+            // Service the control plane (heartbeat, Broker commands)
+            if let Some(ref mut agent) = self.connector_agent {
+                if let Err(e) = agent.maybe_heartbeat() {
+                    tracing::error!("Heartbeat failed: {}", e);
+                }
+                if let Err(e) = agent.poll() {
+                    tracing::error!("Control plane error: {}", e);
+                    // Broker disconnected — shut down
+                    break;
+                }
+            }
+
+            std::thread::sleep(Duration::from_micros(100));
+        }
+
+        // Graceful disconnect
+        if let Some(ref mut agent) = self.connector_agent {
+            let _ = agent.disconnect("connector shutting down");
+        }
+
+        self.audit.log_daemon_stopped("connector shutdown");
+        tracing::info!("Connector shutting down");
+        self.log_peer_stats();
+        Ok(())
     }
     
     #[cfg(unix)]
@@ -1221,13 +1358,482 @@ mod tests {
             reload: Arc::new(AtomicBool::new(false)),
             private_key: StaticSecret::from([1u8; 32]),
             next_peer_index: 0, is_server: false,
+            connector_mode: false, connector_agent: None,
             policy: PolicyEngine::disabled(),
             revocation: RevocationEngine::disabled(),
             audit: AuditLogger::disabled(),
             last_revocation_check: Instant::now(),
+            last_crngt_check: Instant::now(),
         };
         assert!(daemon.is_tun_subnet(IpAddr::V4(Ipv4Addr::new(10, 200, 200, 0)), 24));
         assert!(!daemon.is_tun_subnet(IpAddr::V4(Ipv4Addr::new(10, 200, 200, 2)), 32));
         assert!(!daemon.is_tun_subnet(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24));
+    }
+
+    // ─── Two-Daemon Integration Tests ───────────────────────────────────
+    //
+    // These tests spin up two Daemon instances with real UDP sockets on
+    // localhost and verify the full handshake and data-plane path without
+    // needing TUN devices (which require admin/root privileges).
+
+    use crate::config::PeerConfig;
+    use rand_core::OsRng;
+
+    /// Build a minimal IPv4 ICMP echo-request packet.
+    /// src_ip → dst_ip, total length = 28 bytes.
+    fn build_ipv4_icmp(src_ip: [u8; 4], dst_ip: [u8; 4]) -> Vec<u8> {
+        let mut pkt = vec![0u8; 28];
+        // Version + IHL
+        pkt[0] = 0x45;
+        // Total length = 28
+        pkt[2] = 0;
+        pkt[3] = 28;
+        // TTL
+        pkt[8] = 64;
+        // Protocol: ICMP = 1
+        pkt[9] = 1;
+        // Source IP
+        pkt[12..16].copy_from_slice(&src_ip);
+        // Destination IP
+        pkt[16..20].copy_from_slice(&dst_ip);
+        // IP header checksum
+        let cksum = ip_checksum(&pkt[..20]);
+        pkt[10] = (cksum >> 8) as u8;
+        pkt[11] = (cksum & 0xff) as u8;
+        // ICMP type 8 (echo request), code 0
+        pkt[20] = 8;
+        pkt[21] = 0;
+        // ICMP checksum (over ICMP portion)
+        let icmp_cksum = ip_checksum(&pkt[20..]);
+        pkt[22] = (icmp_cksum >> 8) as u8;
+        pkt[23] = (icmp_cksum & 0xff) as u8;
+        pkt
+    }
+
+    fn ip_checksum(data: &[u8]) -> u16 {
+        let mut sum: u32 = 0;
+        let mut i = 0;
+        while i + 1 < data.len() {
+            sum += ((data[i] as u32) << 8) | (data[i + 1] as u32);
+            i += 2;
+        }
+        if i < data.len() {
+            sum += (data[i] as u32) << 8;
+        }
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        !sum as u16
+    }
+
+    /// Initialize a daemon for testing: bind a UDP socket and init peers, but
+    /// skip TUN device creation (no admin privileges needed).
+    /// Returns the localhost-reachable address (127.0.0.1:port).
+    fn init_daemon_test_mode(daemon: &mut Daemon) -> SocketAddr {
+        let socket = Daemon::create_udp_socket(0).expect("bind UDP");
+        // Switch to blocking mode for deterministic test reads.
+        // The daemon's event loop uses non-blocking, but for tests we need
+        // blocking recv_from with a timeout.
+        socket.set_nonblocking(false).expect("set blocking");
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set read timeout");
+        // local_addr() returns 0.0.0.0:port — rewrite to 127.0.0.1:port
+        // so the other daemon can actually send to us.
+        let port = socket.local_addr().unwrap().port();
+        let reachable = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        daemon.socket = Some(socket);
+        daemon.init_peers().expect("init peers");
+        reachable
+    }
+
+    /// Drive the WireGuard handshake between two daemons over real UDP.
+    /// Returns once both sides have session_established == true.
+    fn drive_handshake(client: &mut Daemon, server: &mut Daemon) {
+        let mut out_buf = vec![0u8; 8192];
+        let mut recv_buf = vec![0u8; 8192];
+
+        // 1. Client initiates handshake → packet goes to server via UDP
+        client.initiate_handshakes(&mut out_buf);
+
+        // 2. Server reads the handshake init
+        let (n, src) = server
+            .socket
+            .as_ref()
+            .unwrap()
+            .recv_from(&mut recv_buf)
+            .expect("server: recv handshake init");
+        server.handle_udp_packet(&recv_buf[..n], src, &mut out_buf);
+
+        // 3. Client reads the handshake response
+        let (n, src) = client
+            .socket
+            .as_ref()
+            .unwrap()
+            .recv_from(&mut recv_buf)
+            .expect("client: recv handshake response");
+        client.handle_udp_packet(&recv_buf[..n], src, &mut out_buf);
+
+        // 4. Server reads the transport keepalive
+        if let Ok((n, src)) = server.socket.as_ref().unwrap().recv_from(&mut recv_buf) {
+            server.handle_udp_packet(&recv_buf[..n], src, &mut out_buf);
+        }
+    }
+
+    /// Classic mode: two daemons complete a WireGuard handshake over real UDP,
+    /// then exchange an encrypted IP packet and verify it decrypts correctly.
+    #[test]
+    fn test_two_daemons_classic_handshake_and_data() {
+        // ── Key generation ─────────────────────────────────────────────
+        let server_sk = StaticSecret::random_from_rng(OsRng);
+        let server_pk = PublicKey::from(&server_sk);
+        let client_sk = StaticSecret::random_from_rng(OsRng);
+        let client_pk = PublicKey::from(&client_sk);
+
+        // ── Server config ──────────────────────────────────────────────
+        let server_config = TunnelConfig::new("test-svr", server_sk.to_bytes())
+            .with_listen_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .with_address(IpAddr::V4(Ipv4Addr::new(10, 100, 0, 1)), 24)
+            .with_mode(dybervpn_protocol::OperatingMode::Classic)
+            .with_peer(
+                PeerConfig::new(client_pk.to_bytes())
+                    .with_name("test-client".to_string())
+                    .with_allowed_ip(IpAddr::V4(Ipv4Addr::new(10, 100, 0, 2)), 32),
+            );
+
+        let mut server = Daemon::new(server_config).unwrap();
+        let server_addr = init_daemon_test_mode(&mut server);
+
+        // ── Client config (needs server's actual port) ─────────────────
+        let client_config = TunnelConfig::new("test-cli", client_sk.to_bytes())
+            .with_listen_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .with_address(IpAddr::V4(Ipv4Addr::new(10, 100, 0, 2)), 24)
+            .with_mode(dybervpn_protocol::OperatingMode::Classic)
+            .with_peer(
+                PeerConfig::new(server_pk.to_bytes())
+                    .with_name("test-server".to_string())
+                    .with_endpoint(server_addr)
+                    .with_allowed_ip(IpAddr::V4(Ipv4Addr::new(10, 100, 0, 1)), 32),
+            );
+
+        let mut client = Daemon::new(client_config).unwrap();
+        init_daemon_test_mode(&mut client);
+
+        // ── Handshake ──────────────────────────────────────────────────
+        drive_handshake(&mut client, &mut server);
+
+        // After the handshake, both sides have established crypto sessions
+        // but session_established is only set on the first data packet.
+        // Verify the handshake completed by sending actual data.
+
+        // ── Data traffic: client → server ──────────────────────────────
+        // Build a real IPv4 ICMP echo-request: 10.100.0.2 → 10.100.0.1
+        let original_packet = build_ipv4_icmp([10, 100, 0, 2], [10, 100, 0, 1]);
+
+        // Client encrypts + sends (using handle_tun_packet which routes by dst IP)
+        let mut out_buf = vec![0u8; 8192];
+        client.handle_tun_packet(&original_packet, &mut out_buf);
+
+        // Verify client transmitted bytes
+        let client_peer = client.peers.values().next().unwrap();
+        assert!(client_peer.tx_bytes > 0, "Client should have transmitted bytes");
+
+        // Server reads the encrypted packet from UDP
+        let mut recv_buf = vec![0u8; 8192];
+        let (n, src) = server
+            .socket
+            .as_ref()
+            .unwrap()
+            .recv_from(&mut recv_buf)
+            .expect("server: recv data packet");
+
+        // Decapsulate directly to verify the plaintext round-trips correctly.
+        let server_peer_key = *server.peers.keys().next().expect("server has peer");
+        let server_peer = server.peers.get_mut(&server_peer_key).unwrap();
+        let mut decrypt_buf = vec![0u8; 8192];
+        let result = server_peer.tunn.decapsulate(Some(src.ip()), &recv_buf[..n], &mut decrypt_buf);
+
+        match result {
+            WgResult::WriteToTunnelV4(decrypted, _) => {
+                assert_eq!(
+                    decrypted, &original_packet[..],
+                    "Decrypted packet must match the original ICMP echo-request"
+                );
+            }
+            other => panic!(
+                "Expected WriteToTunnelV4 with decrypted data, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    /// Hybrid mode (X25519 + ML-KEM-768): two daemons complete a post-quantum
+    /// handshake over real UDP, then exchange encrypted traffic.
+    #[test]
+    fn test_two_daemons_hybrid_handshake_and_data() {
+        // ── Key generation ─────────────────────────────────────────────
+        let server_sk = StaticSecret::random_from_rng(OsRng);
+        let server_pk = PublicKey::from(&server_sk);
+        let client_sk = StaticSecret::random_from_rng(OsRng);
+        let client_pk = PublicKey::from(&client_sk);
+
+        // For hybrid mode, TunnelConfig::validate() requires pq_private_key
+        // and peer.pq_public_key. These are not actually consumed by init_peers
+        // (the handshake generates ephemeral ML-KEM keys), but we need them to
+        // pass validation. Use placeholder bytes of the correct length.
+        let dummy_pq_key = vec![0xAB; 2400]; // ML-KEM-768 private key size
+
+        // ── Server config ──────────────────────────────────────────────
+        let server_config = TunnelConfig::new("test-svr", server_sk.to_bytes())
+            .with_listen_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .with_address(IpAddr::V4(Ipv4Addr::new(10, 200, 0, 1)), 24)
+            .with_mode(dybervpn_protocol::OperatingMode::Hybrid)
+            .with_pq_private_key(dummy_pq_key.clone())
+            .with_peer(
+                PeerConfig::new(client_pk.to_bytes())
+                    .with_name("hybrid-client".to_string())
+                    .with_allowed_ip(IpAddr::V4(Ipv4Addr::new(10, 200, 0, 2)), 32)
+                    .with_pq_public_key(vec![0xCD; 1184]),
+            );
+
+        let mut server = Daemon::new(server_config).unwrap();
+        let server_addr = init_daemon_test_mode(&mut server);
+
+        // ── Client config ──────────────────────────────────────────────
+        let client_config = TunnelConfig::new("test-cli", client_sk.to_bytes())
+            .with_listen_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .with_address(IpAddr::V4(Ipv4Addr::new(10, 200, 0, 2)), 24)
+            .with_mode(dybervpn_protocol::OperatingMode::Hybrid)
+            .with_pq_private_key(dummy_pq_key)
+            .with_peer(
+                PeerConfig::new(server_pk.to_bytes())
+                    .with_name("hybrid-server".to_string())
+                    .with_endpoint(server_addr)
+                    .with_allowed_ip(IpAddr::V4(Ipv4Addr::new(10, 200, 0, 1)), 32)
+                    .with_pq_public_key(vec![0xCD; 1184]),
+            );
+
+        let mut client = Daemon::new(client_config).unwrap();
+        init_daemon_test_mode(&mut client);
+
+        // Verify hybrid mode is active
+        assert!(
+            client.peers.values().next().unwrap().tunn.is_hybrid(),
+            "Client tunnel should be in hybrid mode"
+        );
+        assert!(
+            server.peers.values().next().unwrap().tunn.is_hybrid(),
+            "Server tunnel should be in hybrid mode"
+        );
+
+        // ── Handshake (ML-KEM + X25519) ────────────────────────────────
+        drive_handshake(&mut client, &mut server);
+
+        // ── Data traffic: client → server ──────────────────────────────
+        let original_packet = build_ipv4_icmp([10, 200, 0, 2], [10, 200, 0, 1]);
+        let mut out_buf = vec![0u8; 8192];
+        client.handle_tun_packet(&original_packet, &mut out_buf);
+
+        let mut recv_buf = vec![0u8; 8192];
+        let (n, src) = server
+            .socket
+            .as_ref()
+            .unwrap()
+            .recv_from(&mut recv_buf)
+            .expect("server: recv hybrid data packet");
+
+        let server_peer_key = *server.peers.keys().next().unwrap();
+        let server_peer = server.peers.get_mut(&server_peer_key).unwrap();
+        let mut decrypt_buf = vec![0u8; 8192];
+        let result = server_peer.tunn.decapsulate(Some(src.ip()), &recv_buf[..n], &mut decrypt_buf);
+
+        match result {
+            WgResult::WriteToTunnelV4(decrypted, _) => {
+                assert_eq!(
+                    decrypted, &original_packet[..],
+                    "Hybrid-encrypted packet must decrypt to original"
+                );
+            }
+            other => panic!(
+                "Expected WriteToTunnelV4, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    /// Bidirectional traffic: after handshake, both client and server can send
+    /// encrypted packets to each other and successfully decrypt them.
+    #[test]
+    fn test_two_daemons_bidirectional_traffic() {
+        let server_sk = StaticSecret::random_from_rng(OsRng);
+        let server_pk = PublicKey::from(&server_sk);
+        let client_sk = StaticSecret::random_from_rng(OsRng);
+        let client_pk = PublicKey::from(&client_sk);
+
+        let server_config = TunnelConfig::new("test-svr", server_sk.to_bytes())
+            .with_listen_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .with_address(IpAddr::V4(Ipv4Addr::new(10, 50, 0, 1)), 24)
+            .with_mode(dybervpn_protocol::OperatingMode::Classic)
+            .with_peer(
+                PeerConfig::new(client_pk.to_bytes())
+                    .with_name("bidir-client".to_string())
+                    .with_allowed_ip(IpAddr::V4(Ipv4Addr::new(10, 50, 0, 2)), 32),
+            );
+
+        let mut server = Daemon::new(server_config).unwrap();
+        let server_addr = init_daemon_test_mode(&mut server);
+
+        let client_config = TunnelConfig::new("test-cli", client_sk.to_bytes())
+            .with_listen_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .with_address(IpAddr::V4(Ipv4Addr::new(10, 50, 0, 2)), 24)
+            .with_mode(dybervpn_protocol::OperatingMode::Classic)
+            .with_peer(
+                PeerConfig::new(server_pk.to_bytes())
+                    .with_name("bidir-server".to_string())
+                    .with_endpoint(server_addr)
+                    .with_allowed_ip(IpAddr::V4(Ipv4Addr::new(10, 50, 0, 1)), 32),
+            );
+
+        let mut client = Daemon::new(client_config).unwrap();
+        init_daemon_test_mode(&mut client);
+
+        // Complete handshake
+        drive_handshake(&mut client, &mut server);
+
+        let mut out_buf = vec![0u8; 8192];
+        let mut recv_buf = vec![0u8; 8192];
+        let mut decrypt_buf = vec![0u8; 8192];
+
+        // ── Direction 1: client → server ───────────────────────────────
+        let pkt_c2s = build_ipv4_icmp([10, 50, 0, 2], [10, 50, 0, 1]);
+        client.handle_tun_packet(&pkt_c2s, &mut out_buf);
+
+        let (n, src) = server
+            .socket
+            .as_ref()
+            .unwrap()
+            .recv_from(&mut recv_buf)
+            .expect("server: recv c2s");
+
+        let sk = *server.peers.keys().next().unwrap();
+        let sp = server.peers.get_mut(&sk).unwrap();
+        let result = sp.tunn.decapsulate(Some(src.ip()), &recv_buf[..n], &mut decrypt_buf);
+        match result {
+            WgResult::WriteToTunnelV4(d, _) => assert_eq!(d, &pkt_c2s[..]),
+            other => panic!("c→s: expected WriteToTunnelV4, got {:?}", std::mem::discriminant(&other)),
+        }
+
+        // ── Direction 2: server → client ───────────────────────────────
+        // Server needs the client's endpoint. After the handshake, the server
+        // learned it from the incoming handshake init packet.
+        let pkt_s2c = build_ipv4_icmp([10, 50, 0, 1], [10, 50, 0, 2]);
+        server.handle_tun_packet(&pkt_s2c, &mut out_buf);
+
+        let (n, src) = client
+            .socket
+            .as_ref()
+            .unwrap()
+            .recv_from(&mut recv_buf)
+            .expect("client: recv s2c");
+
+        let ck = *client.peers.keys().next().unwrap();
+        let cp = client.peers.get_mut(&ck).unwrap();
+        let result = cp.tunn.decapsulate(Some(src.ip()), &recv_buf[..n], &mut decrypt_buf);
+        match result {
+            WgResult::WriteToTunnelV4(d, _) => assert_eq!(d, &pkt_s2c[..]),
+            other => panic!("s→c: expected WriteToTunnelV4, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    /// Multiple packets: verify the tunnel handles a burst of traffic correctly,
+    /// with each packet decrypting to its original content (sequence counters,
+    /// nonce rotation, etc. all work across multiple encrypt/decrypt cycles).
+    #[test]
+    fn test_two_daemons_multi_packet_burst() {
+        let server_sk = StaticSecret::random_from_rng(OsRng);
+        let server_pk = PublicKey::from(&server_sk);
+        let client_sk = StaticSecret::random_from_rng(OsRng);
+        let client_pk = PublicKey::from(&client_sk);
+
+        let server_config = TunnelConfig::new("test-svr", server_sk.to_bytes())
+            .with_listen_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .with_address(IpAddr::V4(Ipv4Addr::new(10, 60, 0, 1)), 24)
+            .with_mode(dybervpn_protocol::OperatingMode::Classic)
+            .with_peer(
+                PeerConfig::new(client_pk.to_bytes())
+                    .with_name("burst-client".to_string())
+                    .with_allowed_ip(IpAddr::V4(Ipv4Addr::new(10, 60, 0, 2)), 32),
+            );
+
+        let mut server = Daemon::new(server_config).unwrap();
+        let server_addr = init_daemon_test_mode(&mut server);
+
+        let client_config = TunnelConfig::new("test-cli", client_sk.to_bytes())
+            .with_listen_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .with_address(IpAddr::V4(Ipv4Addr::new(10, 60, 0, 2)), 24)
+            .with_mode(dybervpn_protocol::OperatingMode::Classic)
+            .with_peer(
+                PeerConfig::new(server_pk.to_bytes())
+                    .with_name("burst-server".to_string())
+                    .with_endpoint(server_addr)
+                    .with_allowed_ip(IpAddr::V4(Ipv4Addr::new(10, 60, 0, 1)), 32),
+            );
+
+        let mut client = Daemon::new(client_config).unwrap();
+        init_daemon_test_mode(&mut client);
+
+        drive_handshake(&mut client, &mut server);
+
+        // Send 20 packets, each with a unique payload byte in the ICMP data
+        let mut out_buf = vec![0u8; 8192];
+        let mut recv_buf = vec![0u8; 8192];
+        let mut decrypt_buf = vec![0u8; 8192];
+        let packet_count = 20;
+
+        for i in 0..packet_count {
+            let mut pkt = build_ipv4_icmp([10, 60, 0, 2], [10, 60, 0, 1]);
+            // Put sequence number in the ICMP identifier field (bytes 24-25)
+            pkt.push(i as u8);
+            // Fix the total length in the IP header
+            let total_len = pkt.len() as u16;
+            pkt[2] = (total_len >> 8) as u8;
+            pkt[3] = (total_len & 0xff) as u8;
+            // Recompute IP header checksum
+            pkt[10] = 0;
+            pkt[11] = 0;
+            let cksum = ip_checksum(&pkt[..20]);
+            pkt[10] = (cksum >> 8) as u8;
+            pkt[11] = (cksum & 0xff) as u8;
+
+            client.handle_tun_packet(&pkt, &mut out_buf);
+
+            let (n, src) = server
+                .socket
+                .as_ref()
+                .unwrap()
+                .recv_from(&mut recv_buf)
+                .expect("server: recv burst packet");
+
+            let sk = *server.peers.keys().next().unwrap();
+            let sp = server.peers.get_mut(&sk).unwrap();
+            let result = sp.tunn.decapsulate(Some(src.ip()), &recv_buf[..n], &mut decrypt_buf);
+            match result {
+                WgResult::WriteToTunnelV4(d, _) => {
+                    assert_eq!(d, &pkt[..], "Packet {} must decrypt correctly", i);
+                }
+                other => panic!(
+                    "Packet {}: expected WriteToTunnelV4, got {:?}",
+                    i,
+                    std::mem::discriminant(&other)
+                ),
+            }
+        }
+
+        // Verify byte counters
+        let client_peer = client.peers.values().next().unwrap();
+        assert!(
+            client_peer.tx_bytes > 0,
+            "Client should show transmitted bytes after burst"
+        );
     }
 }

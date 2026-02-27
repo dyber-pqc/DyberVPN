@@ -6,6 +6,7 @@
 
 pub mod audit;
 pub mod config;
+pub mod connector;
 pub mod daemon;
 pub mod device;
 pub mod enrollment;
@@ -26,7 +27,7 @@ pub mod windows;
 
 // Re-exports
 pub use audit::{AuditConfig, AuditLogger};
-pub use config::{TunnelConfig, PeerConfig};
+pub use config::{TunnelConfig, PeerConfig, ConnectorConfig};
 pub use daemon::Daemon;
 pub use device::DeviceHandle;
 pub use error::{TunnelError, TunnelResult};

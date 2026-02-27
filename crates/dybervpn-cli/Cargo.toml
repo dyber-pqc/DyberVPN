@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 dybervpn-protocol = { path = "../dybervpn-protocol" }
 dybervpn-tunnel = { path = "../dybervpn-tunnel" }
+dybervpn-broker = { path = "../dybervpn-broker" }
 
 clap.workspace = true
 tracing.workspace = true
@@ -26,6 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 chrono = "0.4"
 ctrlc = "3.4"
+tokio.workspace = true
 sha2.workspace = true
 hex.workspace = true
 

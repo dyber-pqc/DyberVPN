@@ -329,6 +329,11 @@ impl Tunn {
         self.mode
     }
 
+    /// Get the peer's static public key bytes
+    pub fn peer_public_key(&self) -> [u8; 32] {
+        *self.handshake.peer_public_key_bytes()
+    }
+
     /// Update the private key and clear existing sessions
     pub fn set_static_private(
         &mut self,

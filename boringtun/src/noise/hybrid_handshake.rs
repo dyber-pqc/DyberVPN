@@ -894,4 +894,341 @@ mod tests {
         
         assert_eq!(initiator_combined, responder_combined);
     }
+
+    // =========================================================================
+    // Serialization round-trip tests
+    // =========================================================================
+
+    #[test]
+    fn test_init_pq_format_parse_roundtrip() {
+        // Build a realistic classic init with known field values
+        let mut classic_init = [0u8; 148];
+        // Type = 1 (HANDSHAKE_INIT), will be overwritten to 5 by format_handshake_init_pq
+        classic_init[0..4].copy_from_slice(&1u32.to_le_bytes());
+        // Sender index = 0xDEADBEEF
+        let sender_idx: u32 = 0xDEADBEEF;
+        classic_init[4..8].copy_from_slice(&sender_idx.to_le_bytes());
+        // Unencrypted ephemeral (32 bytes at offset 8)
+        let ephemeral = [0x42u8; 32];
+        classic_init[8..40].copy_from_slice(&ephemeral);
+        // Encrypted static (48 bytes at offset 40)
+        let enc_static = [0xAA; 48];
+        classic_init[40..88].copy_from_slice(&enc_static);
+        // Encrypted timestamp (28 bytes at offset 88)
+        let enc_timestamp = [0xBB; 28];
+        classic_init[88..116].copy_from_slice(&enc_timestamp);
+        // MACs at 116..148 (32 bytes) — set to non-zero to verify they're preserved
+        let macs = [0xCC; 32];
+        classic_init[116..148].copy_from_slice(&macs);
+
+        // PQ ephemeral public key
+        let pq_pk = vec![0x77u8; MLKEM_PUBLIC_KEY_SIZE];
+
+        // Format
+        let mut dst = vec![0u8; HANDSHAKE_INIT_PQ_SZ];
+        let size = format_handshake_init_pq(&classic_init, &pq_pk, &mut dst).unwrap();
+        assert_eq!(size, HANDSHAKE_INIT_PQ_SZ);
+
+        // Parse back
+        let parsed = HandshakeInitPq::parse(&dst).unwrap();
+
+        // Verify all fields survived the round-trip
+        assert_eq!(parsed.sender_idx, sender_idx);
+        assert_eq!(parsed.unencrypted_ephemeral, &ephemeral);
+        assert_eq!(parsed.encrypted_static, &enc_static[..]);
+        assert_eq!(parsed.encrypted_timestamp, &enc_timestamp[..]);
+        assert_eq!(parsed.pq_ephemeral_public, &pq_pk[..]);
+    }
+
+    #[test]
+    fn test_resp_pq_format_parse_roundtrip() {
+        // Build a realistic classic response with known field values
+        let mut classic_resp = [0u8; 92];
+        // Type = 2, will be overwritten to 6
+        classic_resp[0..4].copy_from_slice(&2u32.to_le_bytes());
+        // Sender index
+        let sender_idx: u32 = 0x12345678;
+        classic_resp[4..8].copy_from_slice(&sender_idx.to_le_bytes());
+        // Receiver index
+        let receiver_idx: u32 = 0x87654321;
+        classic_resp[8..12].copy_from_slice(&receiver_idx.to_le_bytes());
+        // Unencrypted ephemeral
+        let ephemeral = [0x55u8; 32];
+        classic_resp[12..44].copy_from_slice(&ephemeral);
+        // Encrypted nothing (16 bytes)
+        let enc_nothing = [0xDD; 16];
+        classic_resp[44..60].copy_from_slice(&enc_nothing);
+        // MACs at 60..92
+        classic_resp[60..92].copy_from_slice(&[0xEE; 32]);
+
+        // PQ ciphertext
+        let pq_ct = vec![0x99u8; MLKEM_CIPHERTEXT_SIZE];
+
+        // Format
+        let mut dst = vec![0u8; HANDSHAKE_RESP_PQ_SZ];
+        let size = format_handshake_response_pq(&classic_resp, &pq_ct, &mut dst).unwrap();
+        assert_eq!(size, HANDSHAKE_RESP_PQ_SZ);
+
+        // Parse back
+        let parsed = HandshakeResponsePq::parse(&dst).unwrap();
+
+        // Verify all fields
+        assert_eq!(parsed.sender_idx, sender_idx);
+        assert_eq!(parsed.receiver_idx, receiver_idx);
+        assert_eq!(parsed.unencrypted_ephemeral, &ephemeral);
+        assert_eq!(parsed.encrypted_nothing, &enc_nothing[..]);
+        assert_eq!(parsed.pq_ciphertext, &pq_ct[..]);
+    }
+
+    #[test]
+    fn test_init_pq_auth_format_parse_roundtrip() {
+        let mut classic_init = [0u8; 148];
+        classic_init[0..4].copy_from_slice(&1u32.to_le_bytes());
+        let sender_idx: u32 = 0xCAFEBABE;
+        classic_init[4..8].copy_from_slice(&sender_idx.to_le_bytes());
+        let ephemeral = [0x11u8; 32];
+        classic_init[8..40].copy_from_slice(&ephemeral);
+        let enc_static = [0x22; 48];
+        classic_init[40..88].copy_from_slice(&enc_static);
+        let enc_timestamp = [0x33; 28];
+        classic_init[88..116].copy_from_slice(&enc_timestamp);
+
+        let pq_pk = vec![0x44u8; MLKEM_PUBLIC_KEY_SIZE];
+        let signature = vec![0x55u8; MLDSA_SIGNATURE_SIZE];
+
+        let mut dst = vec![0u8; HANDSHAKE_INIT_PQ_AUTH_SZ];
+        let size = format_handshake_init_pq_auth(&classic_init, &pq_pk, &signature, &mut dst).unwrap();
+        assert_eq!(size, HANDSHAKE_INIT_PQ_AUTH_SZ);
+
+        let parsed = HandshakeInitPqAuth::parse(&dst).unwrap();
+        assert_eq!(parsed.sender_idx, sender_idx);
+        assert_eq!(parsed.unencrypted_ephemeral, &ephemeral);
+        assert_eq!(parsed.encrypted_static, &enc_static[..]);
+        assert_eq!(parsed.encrypted_timestamp, &enc_timestamp[..]);
+        assert_eq!(parsed.pq_ephemeral_public, &pq_pk[..]);
+        assert_eq!(parsed.mldsa_signature, &signature[..]);
+    }
+
+    #[test]
+    fn test_resp_pq_auth_format_parse_roundtrip() {
+        let mut classic_resp = [0u8; 92];
+        classic_resp[0..4].copy_from_slice(&2u32.to_le_bytes());
+        let sender_idx: u32 = 0xFEEDFACE;
+        classic_resp[4..8].copy_from_slice(&sender_idx.to_le_bytes());
+        let receiver_idx: u32 = 0xDECAF000;
+        classic_resp[8..12].copy_from_slice(&receiver_idx.to_le_bytes());
+        let ephemeral = [0x66u8; 32];
+        classic_resp[12..44].copy_from_slice(&ephemeral);
+        let enc_nothing = [0x77; 16];
+        classic_resp[44..60].copy_from_slice(&enc_nothing);
+
+        let pq_ct = vec![0x88u8; MLKEM_CIPHERTEXT_SIZE];
+        let signature = vec![0x99u8; MLDSA_SIGNATURE_SIZE];
+
+        let mut dst = vec![0u8; HANDSHAKE_RESP_PQ_AUTH_SZ];
+        let size = format_handshake_response_pq_auth(&classic_resp, &pq_ct, &signature, &mut dst).unwrap();
+        assert_eq!(size, HANDSHAKE_RESP_PQ_AUTH_SZ);
+
+        let parsed = HandshakeResponsePqAuth::parse(&dst).unwrap();
+        assert_eq!(parsed.sender_idx, sender_idx);
+        assert_eq!(parsed.receiver_idx, receiver_idx);
+        assert_eq!(parsed.unencrypted_ephemeral, &ephemeral);
+        assert_eq!(parsed.encrypted_nothing, &enc_nothing[..]);
+        assert_eq!(parsed.pq_ciphertext, &pq_ct[..]);
+        assert_eq!(parsed.mldsa_signature, &signature[..]);
+    }
+
+    // =========================================================================
+    // MAC zeroing + transcript signing verification
+    // =========================================================================
+
+    #[test]
+    fn test_pq_auth_transcript_mac_zeroing() {
+        // Verify that both initiator and responder produce identical transcripts
+        // when MAC bytes are zeroed, regardless of what actual MACs were computed.
+        //
+        // This is the protocol invariant: transcript = fields + zero_MACs + PQ_data
+
+        // Simulate an init with non-zero MACs
+        let mut classic_init = [0u8; 148];
+        classic_init[0..4].copy_from_slice(&1u32.to_le_bytes()); // type
+        classic_init[4..8].copy_from_slice(&42u32.to_le_bytes()); // sender_idx
+        let ephemeral = [0xAA; 32];
+        classic_init[8..40].copy_from_slice(&ephemeral);
+        let enc_static = [0xBB; 48];
+        classic_init[40..88].copy_from_slice(&enc_static);
+        let enc_timestamp = [0xCC; 28];
+        classic_init[88..116].copy_from_slice(&enc_timestamp);
+        // Actual MACs would be computed by WireGuard — use different values
+        classic_init[116..132].copy_from_slice(&[0xDD; 16]); // mac1
+        classic_init[132..148].copy_from_slice(&[0xEE; 16]); // mac2
+
+        let pq_pk = vec![0xFF; MLKEM_PUBLIC_KEY_SIZE];
+
+        // Build initiator transcript (as done in format_handshake_initiation)
+        let mut initiator_transcript = Vec::with_capacity(148 + MLKEM_PUBLIC_KEY_SIZE);
+        initiator_transcript.extend_from_slice(&classic_init[..116]); // before MACs
+        initiator_transcript.extend_from_slice(&[0u8; 32]);           // zero MACs
+        initiator_transcript.extend_from_slice(&pq_pk);
+
+        // Build responder transcript (as done in handle_handshake_init_pq_auth)
+        // Responder only has parsed fields, NOT the raw MAC bytes
+        let mut responder_transcript = Vec::with_capacity(148 + MLKEM_PUBLIC_KEY_SIZE);
+        responder_transcript.extend_from_slice(&1u32.to_le_bytes()); // type
+        responder_transcript.extend_from_slice(&42u32.to_le_bytes()); // sender_idx
+        responder_transcript.extend_from_slice(&ephemeral);
+        responder_transcript.extend_from_slice(&enc_static);
+        responder_transcript.extend_from_slice(&enc_timestamp);
+        responder_transcript.extend_from_slice(&[0u8; 32]); // zero MACs
+        responder_transcript.extend_from_slice(&pq_pk);
+
+        // Both transcripts must be byte-identical
+        assert_eq!(initiator_transcript, responder_transcript,
+            "Initiator and responder must produce identical transcripts with zeroed MACs");
+        assert_eq!(initiator_transcript.len(), 148 + MLKEM_PUBLIC_KEY_SIZE);
+    }
+
+    #[test]
+    fn test_transcript_sign_verify_with_zeroed_macs() {
+        // End-to-end: sign a transcript on one side, verify on the other,
+        // using the exact MAC-zeroing protocol from the handshake code.
+
+        let initiator_kp = MlDsaKeyPair::generate().unwrap();
+        let responder_kp = MlDsaKeyPair::generate().unwrap();
+
+        // Simulate init fields
+        let sender_idx: u32 = 1234;
+        let ephemeral = [0x42u8; 32];
+        let enc_static = [0xAA; 48];
+        let enc_timestamp = [0xBB; 28];
+        let pq_pk = PqKeyPair::generate().unwrap().public_key.as_bytes().to_vec();
+
+        // Initiator builds and signs transcript
+        let mut transcript = Vec::new();
+        transcript.extend_from_slice(&1u32.to_le_bytes());
+        transcript.extend_from_slice(&sender_idx.to_le_bytes());
+        transcript.extend_from_slice(&ephemeral);
+        transcript.extend_from_slice(&enc_static);
+        transcript.extend_from_slice(&enc_timestamp);
+        transcript.extend_from_slice(&[0u8; 32]); // zero MACs
+        transcript.extend_from_slice(&pq_pk);
+
+        let signature = initiator_kp.sign(&transcript).unwrap();
+
+        // Responder reconstructs transcript from parsed fields (NOT raw bytes)
+        // and verifies — this is exactly what handle_handshake_init_pq_auth does
+        let mut responder_transcript = Vec::new();
+        responder_transcript.extend_from_slice(&1u32.to_le_bytes());
+        responder_transcript.extend_from_slice(&sender_idx.to_le_bytes());
+        responder_transcript.extend_from_slice(&ephemeral);
+        responder_transcript.extend_from_slice(&enc_static);
+        responder_transcript.extend_from_slice(&enc_timestamp);
+        responder_transcript.extend_from_slice(&[0u8; 32]); // zero MACs
+        responder_transcript.extend_from_slice(&pq_pk);
+
+        // Verify using initiator's public key
+        let valid = mldsa_verify(
+            initiator_kp.public_key(),
+            &responder_transcript,
+            &signature,
+        ).unwrap();
+        assert!(valid, "Responder must be able to verify initiator's signature");
+
+        // Also verify that a wrong transcript fails
+        let mut wrong_transcript = responder_transcript.clone();
+        wrong_transcript[10] ^= 0xFF; // flip a byte
+        let invalid = mldsa_verify(
+            initiator_kp.public_key(),
+            &wrong_transcript,
+            &signature,
+        ).unwrap();
+        assert!(!invalid, "Modified transcript must fail verification");
+
+        // Verify that wrong key fails
+        let wrong_valid = mldsa_verify(
+            responder_kp.public_key(), // wrong key
+            &responder_transcript,
+            &signature,
+        ).unwrap();
+        assert!(!wrong_valid, "Wrong key must fail verification");
+    }
+
+    #[test]
+    fn test_response_transcript_initiator_responder_agreement() {
+        // Test the full response transcript: both sides must agree on the
+        // combined init+response transcript for ML-DSA verification.
+
+        let responder_kp = MlDsaKeyPair::generate().unwrap();
+
+        // Init fields
+        let init_sender_idx: u32 = 100;
+        let init_ephemeral = [0x11; 32];
+        let init_enc_static = [0x22; 48];
+        let init_enc_timestamp = [0x33; 28];
+        let pq_pk = vec![0x44; MLKEM_PUBLIC_KEY_SIZE];
+
+        // Response fields
+        let resp_sender_idx: u32 = 200;
+        let resp_receiver_idx: u32 = 100;
+        let resp_ephemeral = [0x55; 32];
+        let resp_enc_nothing = [0x66; 16];
+        let pq_ct = vec![0x77; MLKEM_CIPHERTEXT_SIZE];
+
+        // Responder builds full transcript and signs
+        let mut resp_transcript = Vec::new();
+        // init part (with zero MACs)
+        resp_transcript.extend_from_slice(&1u32.to_le_bytes());
+        resp_transcript.extend_from_slice(&init_sender_idx.to_le_bytes());
+        resp_transcript.extend_from_slice(&init_ephemeral);
+        resp_transcript.extend_from_slice(&init_enc_static);
+        resp_transcript.extend_from_slice(&init_enc_timestamp);
+        resp_transcript.extend_from_slice(&[0u8; 32]); // zero MACs
+        resp_transcript.extend_from_slice(&pq_pk);
+        // response part (with zero MACs)
+        resp_transcript.extend_from_slice(&2u32.to_le_bytes()); // response type
+        resp_transcript.extend_from_slice(&resp_sender_idx.to_le_bytes());
+        resp_transcript.extend_from_slice(&resp_receiver_idx.to_le_bytes());
+        resp_transcript.extend_from_slice(&resp_ephemeral);
+        resp_transcript.extend_from_slice(&resp_enc_nothing);
+        resp_transcript.extend_from_slice(&[0u8; 32]); // zero MACs
+        resp_transcript.extend_from_slice(&pq_ct);
+
+        let signature = responder_kp.sign(&resp_transcript).unwrap();
+
+        // Initiator rebuilds the same transcript from its stored init + parsed response
+        let mut init_transcript = Vec::new();
+        // Initiator has the raw init bytes (116 before MACs)
+        let mut raw_init = [0u8; 148];
+        raw_init[0..4].copy_from_slice(&1u32.to_le_bytes());
+        raw_init[4..8].copy_from_slice(&init_sender_idx.to_le_bytes());
+        raw_init[8..40].copy_from_slice(&init_ephemeral);
+        raw_init[40..88].copy_from_slice(&init_enc_static);
+        raw_init[88..116].copy_from_slice(&init_enc_timestamp);
+        // Non-zero MACs in the actual packet (doesn't matter — we zero them)
+        raw_init[116..148].copy_from_slice(&[0xFF; 32]);
+
+        init_transcript.extend_from_slice(&raw_init[..116]); // before MACs
+        init_transcript.extend_from_slice(&[0u8; 32]); // zero MACs
+        init_transcript.extend_from_slice(&pq_pk);
+        // response part
+        init_transcript.extend_from_slice(&2u32.to_le_bytes());
+        init_transcript.extend_from_slice(&resp_sender_idx.to_le_bytes());
+        init_transcript.extend_from_slice(&resp_receiver_idx.to_le_bytes());
+        init_transcript.extend_from_slice(&resp_ephemeral);
+        init_transcript.extend_from_slice(&resp_enc_nothing);
+        init_transcript.extend_from_slice(&[0u8; 32]); // zero MACs
+        init_transcript.extend_from_slice(&pq_ct);
+
+        // Both transcripts must match
+        assert_eq!(resp_transcript, init_transcript,
+            "Responder and initiator must produce identical response transcripts");
+
+        // Initiator verifies responder's signature
+        let valid = mldsa_verify(
+            responder_kp.public_key(),
+            &init_transcript,
+            &signature,
+        ).unwrap();
+        assert!(valid, "Initiator must verify responder's response signature");
+    }
 }

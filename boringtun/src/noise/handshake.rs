@@ -452,6 +452,11 @@ impl Handshake {
         }
     }
 
+    /// Get the peer's static public key as raw bytes
+    pub fn peer_public_key_bytes(&self) -> &[u8; 32] {
+        self.params.peer_static_public.as_bytes()
+    }
+
     pub(crate) fn is_in_progress(&self) -> bool {
         !matches!(self.state, HandshakeState::None | HandshakeState::Expired)
     }
