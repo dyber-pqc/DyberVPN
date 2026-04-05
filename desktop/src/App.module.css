@@ -1,0 +1,117 @@
+.app {
+  width: 100%;
+  height: 100vh;
+  background: #0a0a0f;
+  font-family: var(--font-main);
+  color: #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+  overflow: hidden;
+}
+
+/* Top bar */
+.topBar {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  background: rgba(12, 12, 20, 0.95);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 100;
+}
+.brandArea {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 16px;
+  height: 100%;
+  -webkit-app-region: drag;
+  flex-shrink: 0;
+}
+.brandIcon {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #7c3aed, #a855f7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.brandName {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f8fafc;
+  letter-spacing: -0.01em;
+}
+
+/* Nav tabs */
+.navArea {
+  display: flex;
+  gap: 2px;
+  height: 100%;
+  align-items: center;
+  padding: 0 8px;
+  flex: 1;
+  -webkit-app-region: drag;
+}
+.navTab {
+  padding: 5px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #6b7280;
+  background: transparent;
+  border: 1px solid transparent;
+  transition: all 0.12s ease;
+  -webkit-app-region: no-drag;
+}
+.navTab:hover {
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.03);
+}
+.navTabActive {
+  color: #e2e8f0;
+  background: rgba(139, 92, 246, 0.12);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+.navIcon {
+  font-size: 12px;
+}
+
+/* Active indicator pill */
+.activePill {
+  padding: 4px 12px;
+  border-radius: 20px;
+  margin-right: 8px;
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.2);
+  font-size: 10px;
+  font-weight: 600;
+  color: #34d399;
+  font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.activeDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.5);
+}
+
+/* Main content */
+.main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}

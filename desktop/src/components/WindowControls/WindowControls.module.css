@@ -1,0 +1,30 @@
+.controls {
+  display: flex;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+.btn {
+  width: 38px;
+  height: 30px;
+  border: none;
+  outline: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease;
+  -webkit-app-region: no-drag;
+}
+.btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.closeBtn {
+  composes: btn;
+}
+.closeBtn:hover {
+  background: #dc2626;
+}
+.closeBtn:hover line {
+  stroke: #fff;
+}

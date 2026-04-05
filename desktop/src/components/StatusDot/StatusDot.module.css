@@ -1,0 +1,13 @@
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #4b5563;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+.connected {
+  background-color: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
+}

@@ -1,0 +1,25 @@
+{
+  "name": "dybervpn-app",
+  "version": "0.1.1",
+  "description": "DyberVPN Desktop Client — Post-Quantum VPN",
+  "author": "Dyber, Inc. <engineering@dyber.org>",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/plugin-store": "^2.0.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}

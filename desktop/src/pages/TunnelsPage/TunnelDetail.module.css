@@ -1,0 +1,376 @@
+.panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Connect area */
+.connectArea {
+  padding: 24px 32px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  z-index: 1;
+}
+.connectBtnWrap {
+  position: relative;
+  border-radius: 50%;
+}
+.connectBtn {
+  width: 110px;
+  height: 110px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.4s ease;
+  border: none;
+  outline: none;
+}
+.connectLabel {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+}
+.statusText {
+  margin-top: 16px;
+  font-size: 14px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tunnelInfo {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #4b5563;
+  font-family: var(--font-mono);
+}
+.killSwitchLabel {
+  color: #f59e0b;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 32px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  position: relative;
+  z-index: 1;
+}
+.tab {
+  padding: 9px 18px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #4b5563;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: var(--font-mono);
+  background: none;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+}
+.tab:hover {
+  color: #6b7280;
+}
+.tabActive {
+  color: #a78bfa;
+  border-bottom: 2px solid #a78bfa;
+}
+
+/* Tab content */
+.tabContent {
+  flex: 1;
+  padding: 18px 32px;
+  overflow: auto;
+  position: relative;
+  z-index: 1;
+}
+
+/* Status grid */
+.statusGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  animation: fadeIn 0.25s ease;
+}
+.statCard {
+  padding: 16px 18px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+}
+.statLabel {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: #4b5563;
+  font-family: var(--font-mono);
+  margin-bottom: 8px;
+}
+.statValue {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-family: var(--font-mono);
+}
+.statValueActive { color: #e2e8f0; }
+.statValueInactive { color: #374151; }
+
+/* Crypto info bar */
+.cryptoBar {
+  grid-column: 1 / -1;
+  padding: 14px 18px;
+  background: rgba(139, 92, 246, 0.05);
+  border: 1px solid rgba(139, 92, 246, 0.1);
+  border-radius: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.cryptoFields {
+  display: flex;
+  gap: 28px;
+  flex-wrap: wrap;
+}
+.cryptoFieldLabel {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: #6b7280;
+  font-family: var(--font-mono);
+}
+.cryptoFieldValue {
+  font-size: 11px;
+  font-weight: 500;
+  color: #a78bfa;
+  font-family: var(--font-mono);
+  margin-top: 3px;
+}
+.cryptoBadges {
+  display: flex;
+  gap: 6px;
+}
+.badge {
+  font-size: 9px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+/* Feature tags */
+.featureTags {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.featureTag {
+  font-size: 9px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+/* Logs */
+.logsAnim {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.9;
+  animation: fadeIn 0.25s ease;
+}
+.logsClearRow {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.logsClearBtn {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: #6b7280;
+  font-size: 10px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+.logsClearBtn:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.logsEmpty {
+  color: #374151;
+  text-align: center;
+  padding: 40px;
+}
+.logLine {
+  display: flex;
+  gap: 10px;
+}
+.logTime {
+  color: #374151;
+  flex-shrink: 0;
+  width: 62px;
+}
+.logIcon {
+  flex-shrink: 0;
+  width: 14px;
+}
+
+/* Peers */
+.peersAnim {
+  animation: fadeIn 0.25s ease;
+}
+.peersHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.peersLabel {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: #6b7280;
+  font-family: var(--font-mono);
+}
+.peersBadge {
+  font-size: 9px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.peerCard {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 18px;
+}
+.peerTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.peerDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.peerName {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+.peerEndpoint {
+  font-size: 10px;
+  color: #6b7280;
+  font-family: var(--font-mono);
+}
+.peerGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 24px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.peerFieldLabel {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: #4b5563;
+  margin-bottom: 3px;
+}
+.peerFieldValue {
+  color: #d1d5db;
+}
+.peerFieldValueKey {
+  color: #a78bfa;
+}
+.qualityBar {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.qualityTrack {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.qualityFill {
+  height: 100%;
+  transition: width 0.3s ease;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #7c3aed, #34d399);
+}
+.qualityLabel {
+  font-size: 9px;
+  color: #34d399;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+/* Config */
+.configBlock {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 2;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 18px;
+  color: #94a3b8;
+  animation: fadeIn 0.25s ease;
+}
+.configComment {
+  color: #6b7280;
+}
+.configSection {
+  color: #a78bfa;
+}
+.configString {
+  color: #34d399;
+}
+.configSecret {
+  color: #374151;
+}
+.configNumber {
+  color: #f59e0b;
+}
+.configSource {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Empty state */
+.empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #374151;
+  position: relative;
+  z-index: 1;
+}

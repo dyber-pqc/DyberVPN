@@ -1,0 +1,154 @@
+# DyberVPN Desktop App CI
+# Copyright 2026 Dyber, Inc.
+#
+# Builds and tests the Tauri desktop client on Windows, macOS, and Linux.
+
+name: Desktop CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-ci.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Frontend lint and build
+  frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Build frontend
+        run: npx vite build
+
+  # Tauri build matrix
+  tauri-build:
+    name: Tauri (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-latest
+          - platform: windows
+            runner: windows-latest
+          - platform: macos
+            runner: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: npm ci || npm install
+
+      - name: Build frontend
+        working-directory: desktop
+        run: npx vite build
+
+      - name: Check Tauri build
+        working-directory: desktop/src-tauri
+        run: cargo check
+
+      - name: Upload build
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-build-${{ matrix.platform }}
+          path: desktop/src-tauri/target/
+
+  # Rust backend checks
+  tauri-clippy:
+    name: Tauri Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      - name: Check formatting
+        working-directory: desktop/src-tauri
+        run: cargo fmt -- --check
+
+      - name: Run Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy -- -D warnings
+
+  desktop-ci-success:
+    name: Desktop CI Success
+    needs: [frontend, tauri-build, tauri-clippy]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [[ "${{ needs.frontend.result }}" != "success" ]] || \
+             [[ "${{ needs.tauri-build.result }}" != "success" ]] || \
+             [[ "${{ needs.tauri-clippy.result }}" != "success" ]]; then
+            echo "One or more desktop CI jobs failed"
+            exit 1
+          fi
+          echo "All desktop CI checks passed!"

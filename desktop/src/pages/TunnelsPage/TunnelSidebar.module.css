@@ -1,0 +1,163 @@
+.sidebar {
+  width: 240px;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, rgba(15, 15, 26, 0.95), rgba(10, 10, 18, 0.98));
+  flex-shrink: 0;
+}
+.list {
+  padding: 14px 12px 8px;
+  flex: 1;
+  overflow: auto;
+}
+.listTitle {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: #6b7280;
+  padding: 0 8px 10px;
+  font-family: var(--font-mono);
+}
+.tunnelItem {
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 3px;
+  background: transparent;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+}
+.tunnelItem:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.tunnelItemActive {
+  background: rgba(139, 92, 246, 0.1);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+.tunnelItemTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tunnelItemLeft {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.tunnelName {
+  font-size: 13px;
+  font-weight: 500;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tunnelNameActive {
+  color: #f1f5f9;
+}
+.tunnelEndpoint {
+  font-size: 10px;
+  color: #4b5563;
+  margin-top: 4px;
+  padding-left: 16px;
+  font-family: var(--font-mono);
+}
+
+/* Import form */
+.importBox {
+  padding: 12px;
+  border-radius: 8px;
+  margin-top: 6px;
+  background: rgba(139, 92, 246, 0.05);
+  border: 1px solid rgba(139, 92, 246, 0.15);
+  animation: fadeIn 0.2s ease;
+}
+.importLabel {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+.importRow {
+  display: flex;
+  gap: 4px;
+}
+.importInput {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.4);
+  color: #e2e8f0;
+  font-size: 11px;
+  outline: none;
+  font-family: var(--font-mono);
+}
+.browseBtn {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.3);
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 12px;
+}
+.browseBtn:hover {
+  background: rgba(0, 0, 0, 0.5);
+}
+.importActions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.importBtn {
+  flex: 1;
+  padding: 7px;
+  border-radius: 6px;
+  border: none;
+  background: linear-gradient(135deg, #7c3aed, #a855f7);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.importBtn:hover {
+  opacity: 0.9;
+}
+.cancelBtn {
+  padding: 7px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: #6b7280;
+  font-size: 11px;
+  cursor: pointer;
+}
+.cancelBtn:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.addBtn {
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-top: 6px;
+  border: 1px dashed rgba(107, 114, 128, 0.3);
+  text-align: center;
+  font-size: 12px;
+  color: #6b7280;
+  transition: all 0.15s ease;
+  background: transparent;
+  width: 100%;
+}
+.addBtn:hover {
+  border-color: rgba(139, 92, 246, 0.4);
+  color: #94a3b8;
+}
+.footer {
+  padding: 10px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 10px;
+  color: #374151;
+  font-family: var(--font-mono);
+}

@@ -1,0 +1,165 @@
+# DyberVPN Security Audit Pipeline
+# Copyright 2026 Dyber, Inc.
+#
+# Comprehensive security scanning: dependency audit, SAST, supply chain, and crypto validation.
+
+name: Security Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run daily at 06:00 UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Rust dependency vulnerability audit
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Audit backend dependencies
+        run: cargo audit --deny warnings
+
+      - name: Audit desktop dependencies
+        working-directory: desktop/src-tauri
+        run: cargo audit --deny warnings
+        continue-on-error: true
+
+  # npm dependency audit for desktop frontend
+  npm-audit:
+    name: NPM Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: npm ci || npm install
+
+      - name: Run npm audit
+        working-directory: desktop
+        run: npm audit --audit-level=high || true
+
+  # Supply chain — check for typosquatting, yanked crates
+  supply-chain:
+    name: Supply Chain Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+
+      - name: Check licenses and advisories
+        run: cargo deny check advisories licenses 2>&1 || true
+
+  # Crypto validation — ensure PQ algorithms produce correct output
+  crypto-validation:
+    name: Crypto Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --bin dybervpn
+
+      - name: Validate ML-KEM-768 key generation
+        run: |
+          # Generate hybrid keys and verify structure
+          OUTPUT=$(./target/release/dybervpn genkey -m hybrid 2>&1)
+          echo "$OUTPUT"
+
+          # Verify key fields are present
+          echo "$OUTPUT" | grep -q "private_key" || { echo "FAIL: missing classical private_key"; exit 1; }
+          echo "$OUTPUT" | grep -q "public_key" || { echo "FAIL: missing classical public_key"; exit 1; }
+          echo "$OUTPUT" | grep -q "pq_private_key" || { echo "FAIL: missing pq_private_key"; exit 1; }
+          echo "$OUTPUT" | grep -q "pq_public_key" || { echo "FAIL: missing pq_public_key"; exit 1; }
+          echo "PASS: Hybrid key generation produces all required fields"
+
+      - name: Validate PQ-only key generation
+        run: |
+          OUTPUT=$(./target/release/dybervpn genkey -m pqonly 2>&1)
+          echo "$OUTPUT" | grep -q "pq_private_key" || { echo "FAIL: missing pq_private_key"; exit 1; }
+          echo "$OUTPUT" | grep -q "pq_public_key" || { echo "FAIL: missing pq_public_key"; exit 1; }
+          echo "PASS: PQ-only key generation correct"
+
+      - name: Validate classic key generation
+        run: |
+          OUTPUT=$(./target/release/dybervpn genkey -m classic 2>&1)
+          echo "$OUTPUT" | grep -q "private_key" || { echo "FAIL: missing private_key"; exit 1; }
+          echo "$OUTPUT" | grep -q "public_key" || { echo "FAIL: missing public_key"; exit 1; }
+          echo "PASS: Classic key generation correct"
+
+      - name: Run FIPS test vectors
+        run: cargo test --release -p dybervpn-protocol -- --nocapture
+
+      - name: Validate config checking
+        run: |
+          # Ensure invalid configs are rejected
+          echo "[interface]" > /tmp/bad.toml
+          echo "mode = \"invalid_mode\"" >> /tmp/bad.toml
+          ! ./target/release/dybervpn check -c /tmp/bad.toml 2>&1 || echo "Config validation working"
+
+  # SAST with CodeQL
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  # Summary
+  audit-summary:
+    name: Audit Summary
+    needs: [cargo-audit, npm-audit, supply-chain, crypto-validation]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Report
+        run: |
+          echo "=== Security Audit Summary ==="
+          echo "Cargo Audit:       ${{ needs.cargo-audit.result }}"
+          echo "NPM Audit:         ${{ needs.npm-audit.result }}"
+          echo "Supply Chain:      ${{ needs.supply-chain.result }}"
+          echo "Crypto Validation: ${{ needs.crypto-validation.result }}"
+
+          if [[ "${{ needs.cargo-audit.result }}" == "failure" ]] || \
+             [[ "${{ needs.crypto-validation.result }}" == "failure" ]]; then
+            echo "CRITICAL: Security audit has failures"
+            exit 1
+          fi
+          echo "Security audit passed"

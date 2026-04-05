@@ -1,0 +1,126 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10001;
+}
+.dialog {
+  background: #1a1a2e;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 24px;
+  width: 400px;
+  animation: fadeIn 0.15s ease;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.titleRevoke {
+  font-size: 15px;
+  font-weight: 600;
+  color: #ef4444;
+  margin-bottom: 4px;
+}
+.titleSuspend {
+  font-size: 15px;
+  font-weight: 600;
+  color: #f59e0b;
+  margin-bottom: 4px;
+}
+.desc {
+  font-size: 11px;
+  color: #6b7280;
+  margin-bottom: 18px;
+  line-height: 1.5;
+}
+.label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: #94a3b8;
+  margin-bottom: 5px;
+  letter-spacing: 0.02em;
+}
+.input {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #f1f5f9;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+  margin-bottom: 14px;
+}
+.input:focus {
+  border-color: rgba(139, 92, 246, 0.5);
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.15);
+}
+.input:disabled {
+  opacity: 0.5;
+}
+.selectWrap {
+  margin-bottom: 14px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.cancelBtn {
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: #94a3b8;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cancelBtn:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.cancelBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.revokeBtn {
+  padding: 8px 22px;
+  border-radius: 6px;
+  border: none;
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.revokeBtn:hover {
+  opacity: 0.9;
+}
+.revokeBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.suspendBtn {
+  padding: 8px 22px;
+  border-radius: 6px;
+  border: none;
+  background: linear-gradient(135deg, #d97706, #f59e0b);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.suspendBtn:hover {
+  opacity: 0.9;
+}
+.suspendBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

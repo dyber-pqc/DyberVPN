@@ -5,6 +5,30 @@ All notable changes to DyberVPN will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-04-05
+
+### Added
+
+- **Tauri Desktop Client**: Full-featured cross-platform GUI for Windows, macOS, and Linux
+  - Tunnel management: import TOML configs, connect/disconnect with real-time traffic stats
+  - Key generation UI for hybrid, PQ-only, and classic modes
+  - Settings dashboard: kill switch, DNS leak protection, split tunneling, crypto mode selection
+  - Fleet management: device enrollment, key revocation/suspension, audit log viewer
+  - Device posture assessment: OS version, firewall, disk encryption, antivirus checks
+  - System tray: minimize to tray, double-click restore, quick connect/disconnect
+  - Single instance guard: prevents duplicate app launches
+  - Auto-connect on launch: optionally connect first tunnel on startup
+  - Graceful shutdown: all tunnels torn down cleanly on exit
+  - Error boundary: branded crash recovery screen with reload button
+  - Demo mode: full UI runs in any browser without Tauri backend
+- **GitHub Actions Workflows**:
+  - `desktop-ci.yml`: Frontend build + Tauri cross-platform compilation + Clippy linting
+  - `desktop-release.yml`: Automated installer generation (.exe, .msi, .dmg, .deb, .AppImage)
+  - `benchmarks.yml`: PQ crypto benchmarks with PR comparison via critcmp
+  - `security-audit.yml`: cargo-audit, npm audit, supply chain checks, crypto validation, CodeQL SAST
+- **Device Posture Assessment**: Real OS-level checks (Windows: PowerShell queries for firewall, BitLocker, Defender)
+- **README**: Updated with desktop client documentation, CI badges, and updated roadmap
+
 ## [0.1.3] - 2026-02-25
 
 ### Added

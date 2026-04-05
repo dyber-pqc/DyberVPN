@@ -1,0 +1,46 @@
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.015);
+}
+.last {
+  border-bottom: none;
+}
+.left {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.icon {
+  font-size: 15px;
+  opacity: 0.6;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+.content {
+  flex: 1;
+  min-width: 0;
+}
+.label {
+  font-size: 13px;
+  color: #d1d5db;
+  font-weight: 500;
+}
+.labelDanger {
+  color: #f87171;
+}
+.desc {
+  font-size: 11px;
+  color: #4b5563;
+  margin-top: 3px;
+  line-height: 1.5;
+}
+.right {
+  flex-shrink: 0;
+}

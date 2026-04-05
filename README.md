@@ -4,6 +4,9 @@
 
 **Post-Quantum VPN & Zero Trust Network Access**
 
+[![CI](https://github.com/dyber-pqc/DyberVPN/actions/workflows/ci.yml/badge.svg)](https://github.com/dyber-pqc/DyberVPN/actions/workflows/ci.yml)
+[![Desktop CI](https://github.com/dyber-pqc/DyberVPN/actions/workflows/desktop-ci.yml/badge.svg)](https://github.com/dyber-pqc/DyberVPN/actions/workflows/desktop-ci.yml)
+[![Security](https://github.com/dyber-pqc/DyberVPN/actions/workflows/security-audit.yml/badge.svg)](https://github.com/dyber-pqc/DyberVPN/actions/workflows/security-audit.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-123%20passing-brightgreen.svg)](#testing)
@@ -12,7 +15,7 @@ DyberVPN is an open-source, self-hosted, post-quantum VPN and Zero Trust Network
 
 ## Status
 
-DyberVPN supports **full post-quantum authentication** with ML-DSA-65 signatures across three operating modes (classic, hybrid, pq-only) and a complete **ZTNA backend** with Broker relay, Connector agents, and Client access — all with per-packet policy enforcement, key revocation, and structured audit logging. 123 tests passing across 6 crates.
+DyberVPN supports **full post-quantum authentication** with ML-DSA-65 signatures across three operating modes (classic, hybrid, pq-only), a complete **ZTNA backend** with Broker relay, Connector agents, and Client access — all with per-packet policy enforcement, key revocation, and structured audit logging — and a **cross-platform desktop client** built with Tauri. 123 tests passing across 6 crates.
 
 ## Features
 
@@ -42,6 +45,20 @@ DyberVPN supports **full post-quantum authentication** with ML-DSA-65 signatures
 - **Compliance Audit Logging**: NDJSON structured events for SOC 2, FedRAMP, HIPAA (SIEM-ready)
 - **ML-DSA Mutual Authentication**: Post-quantum signature verification for Connector registration in hybrid/pq-only modes
 - **Revocation Enforcement**: Revoked keys are rejected at both VPN handshake and ZTNA Connector registration
+- **Device Posture Assessment**: OS version, firewall, disk encryption, antivirus, and screen lock checks with compliance scoring
+
+### Desktop Client (Tauri)
+- **Cross-Platform**: Windows (.exe/.msi), macOS (.dmg), Linux (.deb/.AppImage) from a single codebase
+- **Tunnel Management**: Import TOML configs, connect/disconnect with real-time traffic stats, uptime, and latency
+- **Key Generation UI**: Generate hybrid, PQ-only, or classic key pairs with one click
+- **Settings Dashboard**: Kill switch, DNS leak protection, split tunneling, MTU/port config, crypto mode selection
+- **Fleet Management**: Device enrollment, key revocation/suspension, compliance audit log viewer
+- **Device Posture**: Real-time OS security assessment (firewall, encryption, antivirus)
+- **System Tray**: Minimize to tray, double-click to restore, quick connect/disconnect
+- **Single Instance**: Prevents duplicate app launches
+- **Auto-Connect**: Optionally connect on app startup
+- **Graceful Shutdown**: All tunnels torn down cleanly on exit
+- **Demo Mode**: Full UI runs in any browser without the Tauri backend for development
 
 ## Quick Start
 
@@ -407,6 +424,14 @@ dybervpn/
 │       ├── handshake.rs      # Classical Noise handshake
 │       ├── hybrid_handshake.rs   # ML-KEM/ML-DSA types
 │       └── hybrid_integration.rs # PQ state machines
+├── desktop/                  # Tauri desktop client
+│   ├── src/                  # React frontend (JSX, CSS modules)
+│   │   ├── pages/            # Tunnels, Keys, Settings, About
+│   │   ├── components/       # 15+ reusable UI components
+│   │   ├── hooks/            # useUptime, useTraffic
+│   │   └── lib/              # Tauri invoke bridge, persistent store
+│   └── src-tauri/            # Rust backend (Tauri 2.0)
+│       └── src/main.rs       # 20+ Tauri commands, system tray, stats emitter
 ├── deploy/
 │   ├── Dockerfile
 │   ├── docker-compose.yml
@@ -422,13 +447,31 @@ dybervpn/
 ### Requirements
 
 - Rust 1.75+
-- Linux (primary), macOS (experimental)
-- Root/sudo for TUN device creation
+- Node.js 20+ (for desktop client)
+- Linux, macOS, or Windows
+- Root/sudo for TUN device creation (CLI)
 
-### Build
+### Build CLI
 
 ```bash
 cargo build --release
+```
+
+### Build Desktop App
+
+```bash
+cd desktop
+npm install
+npm run tauri build
+```
+
+The installer is output to `desktop/src-tauri/target/release/bundle/`.
+
+### Run Desktop in Development
+
+```bash
+cd desktop
+npm run tauri dev
 ```
 
 ### Run Tests
@@ -523,12 +566,14 @@ Full documentation: [docs/enterprise-security.md](docs/enterprise-security.md)
 - [x] Client identity extraction via WireGuard handshake parsing
 - [x] Reverse routing (Connector → Client) via learned IP mapping
 - [x] Broker CLI command with full enterprise subsystem integration
+- [x] Tauri desktop app with system tray, auto-connect, and fleet management
+- [x] Cross-platform desktop builds (Windows, macOS, Linux)
+- [x] Device posture assessment and compliance scoring
+- [x] CI/CD with GitHub Actions (backend, desktop, benchmarks, security audit)
+- [x] Docker multi-stage builds with GHCR publishing
 - [ ] QUAC 100 hardware acceleration
 - [ ] FIPS 140-3 validated crypto module
-- [ ] Fleet management dashboard (enterprise)
 - [ ] iOS/Android clients
-- [ ] macOS/Windows clients
-- [ ] Tauri desktop app (GUI)
 
 ## License
 

@@ -1,0 +1,115 @@
+# DyberVPN Cryptographic Benchmarks
+# Copyright 2026 Dyber, Inc.
+#
+# Runs PQ crypto benchmarks and posts results as PR comments.
+
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/dybervpn-protocol/**'
+      - 'boringtun/**'
+      - 'benchmarks/**'
+      - '.github/workflows/benchmarks.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/dybervpn-protocol/**'
+      - 'boringtun/**'
+      - 'benchmarks/**'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: Crypto Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run benchmarks
+        run: |
+          echo "## DyberVPN Cryptographic Benchmarks" > bench-results.md
+          echo "" >> bench-results.md
+          echo "**Date**: $(date -u +'%Y-%m-%d %H:%M UTC')" >> bench-results.md
+          echo "**Runner**: $(uname -m) $(cat /proc/cpuinfo | grep 'model name' | head -1 | cut -d: -f2 | xargs)" >> bench-results.md
+          echo "" >> bench-results.md
+
+          # Run cargo bench and capture output
+          echo '```' >> bench-results.md
+          cargo bench --workspace 2>&1 | tee -a bench-results.md || true
+          echo '```' >> bench-results.md
+
+      - name: Run protocol-specific benchmarks
+        run: |
+          echo "" >> bench-results.md
+          echo "### Protocol Operations" >> bench-results.md
+          echo '```' >> bench-results.md
+
+          # Time key generation for each mode
+          cargo build --release --bin dybervpn 2>/dev/null
+
+          echo "=== Key Generation ===" >> bench-results.md
+          for mode in hybrid pqonly classic; do
+            START=$(date +%s%N)
+            for i in $(seq 1 100); do
+              ./target/release/dybervpn genkey -m $mode > /dev/null 2>&1
+            done
+            END=$(date +%s%N)
+            ELAPSED=$(( (END - START) / 1000000 ))
+            AVG=$(( ELAPSED / 100 ))
+            echo "${mode}: ${AVG}ms avg (100 iterations, ${ELAPSED}ms total)" >> bench-results.md
+          done
+
+          echo '```' >> bench-results.md
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: bench-results.md
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: bench-results.md
+
+  # Benchmark comparison against main (PRs only)
+  bench-compare:
+    name: Benchmark Comparison
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install critcmp
+        run: cargo install critcmp 2>/dev/null || true
+
+      - name: Benchmark PR branch
+        run: cargo bench --workspace -- --save-baseline pr 2>/dev/null || true
+
+      - name: Checkout main
+        run: git checkout origin/main
+
+      - name: Benchmark main branch
+        run: cargo bench --workspace -- --save-baseline main 2>/dev/null || true
+
+      - name: Compare
+        run: |
+          critcmp main pr > comparison.txt 2>&1 || echo "No benchmark comparison available" > comparison.txt
+          cat comparison.txt
+        continue-on-error: true

@@ -1,0 +1,30 @@
+# DyberVPN Desktop Client — Tauri Backend
+# Copyright 2026 Dyber, Inc.
+
+[package]
+name = "dybervpn-app"
+version = "0.1.0"
+description = "DyberVPN Desktop Client"
+authors = ["Dyber, Inc. <engineering@dyber.org>"]
+license = "Apache-2.0"
+repository = "https://github.com/dyber-pqc/DyberVPN"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-store = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9.8"
+tokio = { version = "1", features = ["process", "io-util", "time", "sync"] }
+chrono = "0.4"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
