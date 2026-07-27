@@ -42,7 +42,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// Current wall-clock time in seconds since the Unix epoch.
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 // ─── Data Structures ─────────────────────────────────────────────────────────
 
@@ -201,8 +209,10 @@ pub struct RevocationEngine {
     last_loaded: Option<Instant>,
     /// Security config
     config: SecurityConfig,
-    /// Peer provisioning timestamps (fingerprint → when first seen)
-    peer_first_seen: HashMap<String, Instant>,
+    /// Peer provisioning timestamps: full-key hex → wall-clock unix seconds
+    /// when the key was first seen. Persisted next to the CRL so key-age
+    /// expiry survives daemon restarts (security audit M4).
+    peer_first_seen: HashMap<String, u64>,
 }
 
 impl RevocationEngine {
@@ -240,7 +250,44 @@ impl RevocationEngine {
             }
         }
 
+        // Load persisted first-seen timestamps so key-age expiry survives a
+        // restart (M4). Best-effort: absence just means we start fresh.
+        engine.peer_first_seen = engine.load_seen();
+
         engine
+    }
+
+    /// Path to the sidecar file holding first-seen timestamps.
+    fn seen_path(&self) -> Option<PathBuf> {
+        self.crl_path.as_ref().map(|p| p.with_extension("seen.json"))
+    }
+
+    /// Load the persisted first-seen map (full-key hex → unix seconds).
+    fn load_seen(&self) -> HashMap<String, u64> {
+        match self.seen_path() {
+            Some(path) => fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
+            None => HashMap::new(),
+        }
+    }
+
+    /// Persist the first-seen map atomically (best-effort).
+    fn save_seen(&self) {
+        let path = match self.seen_path() {
+            Some(p) => p,
+            None => return,
+        };
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(&self.peer_first_seen) {
+            let tmp = path.with_extension("seen.tmp");
+            if fs::write(&tmp, &json).is_ok() {
+                let _ = fs::rename(&tmp, &path);
+            }
+        }
     }
 
     /// Create a disabled revocation engine
@@ -293,10 +340,13 @@ impl RevocationEngine {
             }
         }
 
-        // Check key age if key_max_age is configured
+        // Check key age if key_max_age is configured. Age is measured from the
+        // persisted wall-clock first-seen time (M4), so it is not reset by a
+        // daemon restart.
         if self.config.key_max_age_hours > 0 {
-            if let Some(first_seen) = self.peer_first_seen.get(&fingerprint) {
-                let age_hours = first_seen.elapsed().as_secs() / 3600;
+            let key_hex = hex::encode(peer_key);
+            if let Some(first_seen) = self.peer_first_seen.get(&key_hex) {
+                let age_hours = now_unix_secs().saturating_sub(*first_seen) / 3600;
                 if age_hours > self.config.key_max_age_hours {
                     return KeyStatus::Expired(format!(
                         "key age {} hours exceeds max {} hours",
@@ -311,10 +361,13 @@ impl RevocationEngine {
 
     /// Register a peer as "first seen" for key age tracking
     pub fn register_peer(&mut self, peer_key: &[u8; 32]) {
-        let fingerprint = hex::encode(&peer_key[..4]);
-        self.peer_first_seen
-            .entry(fingerprint)
-            .or_insert_with(Instant::now);
+        let key_hex = hex::encode(peer_key);
+        if !self.peer_first_seen.contains_key(&key_hex) {
+            self.peer_first_seen.insert(key_hex, now_unix_secs());
+            // Persist so the key's age is measured from its true first-seen
+            // time, not from when the current process started (M4).
+            self.save_seen();
+        }
     }
 
     /// Check if a key is revoked (convenience method for handshake path)
@@ -549,6 +602,35 @@ mod tests {
         match engine.check_key(&key, Some("bob")) {
             KeyStatus::Revoked(reason) => assert!(reason.contains("employee_departed")),
             other => panic!("Expected Revoked, got {:?}", other),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_age_expiry_persists_across_restart() {
+        // M4: a key older than key_max_age_hours must stay expired after a
+        // daemon restart — age is measured from persisted wall-clock time, not
+        // from an in-memory Instant that resets on restart.
+        let (mut engine, dir) = test_engine("age");
+        engine.config.key_max_age_hours = 1;
+        let key = [0x5Au8; 32];
+
+        // Simulate the key having first been seen 2 hours ago.
+        engine
+            .peer_first_seen
+            .insert(hex::encode(key), now_unix_secs().saturating_sub(2 * 3600));
+        engine.save_seen();
+
+        // A fresh engine (as if the daemon restarted) loads the persisted time.
+        let config = SecurityConfig {
+            crl_path: engine.crl_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            key_max_age_hours: 1,
+            ..Default::default()
+        };
+        let engine2 = RevocationEngine::new(config);
+        match engine2.check_key(&key, None) {
+            KeyStatus::Expired(_) => {}
+            other => panic!("expected Expired after restart, got {:?}", other),
         }
         let _ = fs::remove_dir_all(&dir);
     }

@@ -433,6 +433,20 @@ impl Broker {
             return;
         }
 
+        // M10: if a client allowlist is configured, only listed keys may
+        // establish a tunnel. When empty, any non-revoked client is accepted
+        // (historic behaviour) — configure the allowlist to close the open
+        // relay.
+        if !self.config.authorized_clients.is_empty()
+            && !self.config.authorized_clients.contains(&client_pk)
+        {
+            tracing::warn!(
+                "Rejected handshake from unauthorized Client {}",
+                hex::encode(&client_pk[..4])
+            );
+            return;
+        }
+
         // Step 2: Create a Tunn for this Client (now we know their real public key)
         let broker_secret2 = StaticSecret::from(self.config.private_key);
         let client_public = PublicKey::from(client_pk);

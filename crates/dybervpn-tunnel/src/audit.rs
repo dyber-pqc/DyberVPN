@@ -101,6 +101,10 @@ pub enum EventType {
     KeyRotationCompleted,
     /// A peer's key was revoked
     KeyRevoked,
+    /// A peer's key was suspended (temporarily)
+    KeySuspended,
+    /// A previously revoked/suspended key was reinstated
+    KeyReinstated,
     /// A peer's key expired (exceeded max age)
     KeyExpired,
     /// The certificate revocation list was loaded from disk
@@ -601,6 +605,40 @@ impl AuditLogger {
         ev.peer_id = Some(hex::encode(&peer_key[..8]));
         ev.peer_name = peer_name.map(String::from);
         ev.reason = Some(reason.to_string());
+        self.log(ev);
+    }
+
+    /// Log key suspension
+    pub fn log_key_suspended(&self, peer_key: &[u8; 32], peer_name: Option<&str>, reason: &str) {
+        let mut ev = self.build_event(
+            EventCategory::KeyManagement,
+            EventType::KeySuspended,
+            EventOutcome::Success,
+            format!(
+                "Key suspended for peer {}: {}",
+                peer_name.unwrap_or(&hex::encode(&peer_key[..4])),
+                reason,
+            ),
+        );
+        ev.peer_id = Some(hex::encode(&peer_key[..8]));
+        ev.peer_name = peer_name.map(String::from);
+        ev.reason = Some(reason.to_string());
+        self.log(ev);
+    }
+
+    /// Log key reinstatement (a revocation rollback)
+    pub fn log_key_reinstated(&self, peer_key: &[u8; 32], peer_name: Option<&str>) {
+        let mut ev = self.build_event(
+            EventCategory::KeyManagement,
+            EventType::KeyReinstated,
+            EventOutcome::Success,
+            format!(
+                "Key reinstated for peer {}",
+                peer_name.unwrap_or(&hex::encode(&peer_key[..4])),
+            ),
+        );
+        ev.peer_id = Some(hex::encode(&peer_key[..8]));
+        ev.peer_name = peer_name.map(String::from);
         self.log(ev);
     }
 

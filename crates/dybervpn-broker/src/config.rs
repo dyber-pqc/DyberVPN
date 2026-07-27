@@ -51,6 +51,14 @@ pub struct BrokerConfig {
     /// registrations until at least one authorized connector is configured.
     /// This closes the pre-auth registration bypass (security audit C3/C4).
     pub authorized_connectors: Vec<AuthorizedConnector>,
+
+    /// Allowlist of client X25519 public keys permitted to establish a tunnel.
+    ///
+    /// If non-empty, only these clients may complete a handshake; any other key
+    /// is rejected. If empty, any non-revoked client is accepted (the historic
+    /// behaviour) — configure this to stop the Broker acting as an open relay
+    /// (security audit M10).
+    pub authorized_clients: Vec<[u8; 32]>,
 }
 
 /// A connector explicitly authorized to register with the Broker.
@@ -87,6 +95,7 @@ impl Default for BrokerConfig {
             session_timeout: Duration::from_secs(300),
             heartbeat_timeout: Duration::from_secs(120),
             authorized_connectors: Vec::new(),
+            authorized_clients: Vec::new(),
         }
     }
 }
@@ -236,6 +245,30 @@ pub struct BrokerSection {
     /// register.
     #[serde(default)]
     pub authorized_connector: Vec<AuthorizedConnectorFile>,
+
+    /// Allowlist of client X25519 public keys (base64). If non-empty, only
+    /// these clients may establish a tunnel (security audit M10).
+    #[serde(default)]
+    pub authorized_clients: Vec<String>,
+}
+
+/// Decode a list of base64 X25519 public keys into 32-byte arrays.
+pub fn resolve_authorized_clients(keys: &[String]) -> Result<Vec<[u8; 32]>, String> {
+    let mut out = Vec::with_capacity(keys.len());
+    for k in keys {
+        let bytes = base64::decode(k)
+            .map_err(|_| "authorized_clients entry is not valid base64".to_string())?;
+        if bytes.len() != 32 {
+            return Err(format!(
+                "authorized_clients entry must be 32 bytes, got {}",
+                bytes.len()
+            ));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        out.push(arr);
+    }
+    Ok(out)
 }
 
 /// A `[[authorized_connector]]` entry in the broker config file.
@@ -285,6 +318,21 @@ mod tests {
         assert!(parse_cidr("10.0.0.0/24").is_ok());
         assert!(parse_cidr("::/0").is_ok());
         assert!(parse_cidr("not-a-cidr").is_err());
+    }
+
+    #[test]
+    fn resolve_authorized_clients_validates_keys() {
+        use super::resolve_authorized_clients;
+        let good = base64::encode([7u8; 32]);
+        assert_eq!(
+            resolve_authorized_clients(&[good]).unwrap(),
+            vec![[7u8; 32]]
+        );
+        // Wrong length and bad base64 are rejected.
+        assert!(resolve_authorized_clients(&[base64::encode([7u8; 16])]).is_err());
+        assert!(resolve_authorized_clients(&["not base64!!".to_string()]).is_err());
+        // Empty list is fine (allowlist disabled).
+        assert!(resolve_authorized_clients(&[]).unwrap().is_empty());
     }
 
     #[test]

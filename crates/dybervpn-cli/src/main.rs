@@ -823,6 +823,48 @@ fn token_fingerprint(token: &str) -> String {
     hex::encode(&digest[..8])
 }
 
+/// Build an AuditLogger from a server config's `[audit]` section so key
+/// lifecycle commands leave a tamper-evident record (security audit M5).
+/// Returns a disabled logger if audit is off or the config can't be read.
+fn audit_logger_for(config_path: &Path) -> dybervpn_tunnel::audit::AuditLogger {
+    use dybervpn_tunnel::audit::{AuditConfig, AuditLogger, EventCategory};
+
+    let config = match Config::from_file(config_path) {
+        Ok(c) => c,
+        Err(_) => return AuditLogger::disabled(),
+    };
+    if !config.audit.enabled {
+        return AuditLogger::disabled();
+    }
+
+    let categories: Vec<EventCategory> = config
+        .audit
+        .events
+        .iter()
+        .filter_map(|s| match s.to_lowercase().as_str() {
+            "connection" => Some(EventCategory::Connection),
+            "handshake" => Some(EventCategory::Handshake),
+            "policy" => Some(EventCategory::Policy),
+            "key_management" => Some(EventCategory::KeyManagement),
+            "admin" => Some(EventCategory::Admin),
+            "enrollment" => Some(EventCategory::Enrollment),
+            "data_plane" | "dataplane" => Some(EventCategory::DataPlane),
+            "system" => Some(EventCategory::System),
+            _ => None,
+        })
+        .collect();
+
+    AuditLogger::new(AuditConfig {
+        enabled: true,
+        path: std::path::PathBuf::from(&config.audit.path),
+        max_size_bytes: config.audit.max_size_mb * 1024 * 1024,
+        rotate_count: config.audit.rotate_count,
+        log_data_packets: config.audit.log_data_packets,
+        categories,
+        interface_name: config.interface.name.clone(),
+    })
+}
+
 /// Remove PID file
 fn remove_pid_file(path: &Path) {
     if let Err(e) = fs::remove_file(path) {
@@ -1193,11 +1235,13 @@ fn cmd_up(config_path: &PathBuf, foreground: bool) -> Result<()> {
         };
 
         let enrollment_shutdown = shutdown_flag.clone();
+        let enrollment_audit = audit_logger_for(config_path);
         std::thread::spawn(move || {
             let mut server = dybervpn_tunnel::enrollment::EnrollmentServer::new(
                 enrollment_config,
                 enrollment_shutdown,
             );
+            server.set_audit(enrollment_audit);
             server.run();
         });
 
@@ -3022,6 +3066,8 @@ fn cmd_revoke_key(
         .revoke_key(&peer_key, Some(&peer_name), reason_enum, revoked_by)
         .map_err(|e| anyhow::anyhow!("Revocation failed: {}", e))?;
 
+    audit_logger_for(config_path).log_key_revoked(&peer_key, Some(&peer_name), reason);
+
     println!("\x1b[1;32m✓ Key revoked for peer '{}'\x1b[0m", peer_name);
     println!();
     println!("  Fingerprint: {}", hex::encode(&peer_key[..8]));
@@ -3104,6 +3150,12 @@ fn cmd_suspend_key(
         .suspend_key(&peer_key, Some(&peer_name), expires_str, revoked_by)
         .map_err(|e| anyhow::anyhow!("Suspension failed: {}", e))?;
 
+    audit_logger_for(config_path).log_key_suspended(
+        &peer_key,
+        Some(&peer_name),
+        expires_str.unwrap_or("indefinite"),
+    );
+
     println!("\x1b[1;33m⏸ Key suspended for peer '{}'\x1b[0m", peer_name);
     println!();
     println!("  Fingerprint: {}", hex::encode(&peer_key[..8]));
@@ -3168,6 +3220,8 @@ fn cmd_reinstate_key(config_path: &Path, peer_identifier: &str, skip_confirm: bo
     engine
         .reinstate_key(&peer_key)
         .map_err(|e| anyhow::anyhow!("Reinstatement failed: {}", e))?;
+
+    audit_logger_for(config_path).log_key_reinstated(&peer_key, Some(&peer_name));
 
     println!("\x1b[1;32m✓ Key reinstated for peer '{}'\x1b[0m", peer_name);
     println!();
@@ -3489,11 +3543,23 @@ fn cmd_broker(config_path: &PathBuf) -> Result<()> {
         );
     }
 
+    // Resolve the optional client allowlist (security audit M10).
+    let authorized_clients =
+        dybervpn_broker::config::resolve_authorized_clients(&section.authorized_clients)
+            .map_err(|e| anyhow::anyhow!("Invalid authorized_clients entry: {}", e))?;
+    if authorized_clients.is_empty() {
+        tracing::warn!(
+            "No authorized_clients configured — the Broker accepts any non-revoked client. \
+             Set authorized_clients to restrict which clients may connect."
+        );
+    }
+
     let broker_config = BrokerConfig {
         listen_udp,
         listen_control,
         private_key,
         authorized_connectors,
+        authorized_clients,
         pq_private_key: section
             .pq_private_key
             .as_ref()

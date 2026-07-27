@@ -134,6 +134,8 @@ pub struct EnrollmentServer {
     shutdown: Arc<AtomicBool>,
     /// Track enrolled client names to prevent duplicates
     enrolled_names: Vec<String>,
+    /// Structured audit logger (disabled by default; set via `set_audit`).
+    audit: crate::audit::AuditLogger,
 }
 
 impl EnrollmentServer {
@@ -143,7 +145,13 @@ impl EnrollmentServer {
             config,
             shutdown,
             enrolled_names: Vec::new(),
+            audit: crate::audit::AuditLogger::disabled(),
         }
+    }
+
+    /// Attach an audit logger so enrollment decisions are recorded (M5).
+    pub fn set_audit(&mut self, audit: crate::audit::AuditLogger) {
+        self.audit = audit;
     }
 
     /// Run the enrollment server (blocking — call from a dedicated thread)
@@ -244,6 +252,13 @@ impl EnrollmentServer {
         let expected = format!("Bearer {}", self.config.token);
         if !constant_time_eq(&auth, &expected) {
             tracing::warn!("Enrollment auth failed from {}", addr);
+            self.audit.log_enrollment(
+                "<unauthenticated>",
+                addr.ip(),
+                crate::audit::EventType::EnrollmentDenied,
+                crate::audit::EventOutcome::Denied,
+                "invalid enrollment token",
+            );
             return self.send_response(stream, 401, r#"{"success":false,"error":"unauthorized"}"#);
         }
 
@@ -463,6 +478,15 @@ impl EnrollmentServer {
         // Signal daemon to reload
         self.config.reload_flag.store(true, Ordering::Relaxed);
         self.enrolled_names.push(request.name.clone());
+
+        // M5: record the approved enrollment in the audit log.
+        self.audit.log_enrollment(
+            &request.name,
+            addr.ip(),
+            crate::audit::EventType::EnrollmentApproved,
+            crate::audit::EventOutcome::Success,
+            &format!("assigned {}", client_ip),
+        );
 
         // Build response
         let response = EnrollResponse {
