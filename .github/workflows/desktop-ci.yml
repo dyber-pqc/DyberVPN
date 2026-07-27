@@ -142,13 +142,17 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo fmt -- --check
 
-      # Placeholder sidecar so Tauri's externalBin existence check passes.
-      - name: Create sidecar placeholder
+      # Clippy only lints the Rust backend, but tauri::generate_context!()
+      # requires the sidecar and the frontendDist to exist. Provide minimal
+      # placeholders (the tauri-build jobs validate the real frontend/sidecar).
+      - name: Create build placeholders
         shell: bash
         run: |
           triple=$(rustc -vV | sed -n 's/^host: //p')
           mkdir -p desktop/src-tauri/binaries
           touch "desktop/src-tauri/binaries/dybervpn-${triple}"
+          mkdir -p desktop/dist
+          echo '<!doctype html><title>placeholder</title>' > desktop/dist/index.html
 
       - name: Run Clippy
         working-directory: desktop/src-tauri
