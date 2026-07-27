@@ -1495,6 +1495,40 @@ mod tests {
         parse_keepalive(&mut their_tun, &keepalive);
     }
 
+    /// Regression test for security audit finding H1: PQ handshake messages
+    /// must be MAC1-verified by the rate limiter, exactly like classic ones.
+    /// A tampered MAC1 on a PQ init must be rejected *before* any expensive
+    /// ML-KEM/ML-DSA processing, and a pristine one must still be accepted.
+    #[test]
+    fn hybrid_pq_init_mac1_is_enforced() {
+        let (mut my_tun, mut their_tun) = create_two_hybrid_tuns();
+        let init = create_handshake_init(&mut my_tun);
+        assert_eq!(init.len(), HANDSHAKE_INIT_PQ_SZ);
+
+        // Corrupt the MAC1 field (first byte at offset 116, in the classic
+        // header of the PQ init) and confirm the responder rejects it.
+        let mut tampered = init.clone();
+        tampered[116] ^= 0xFF;
+        let mut dst = vec![0u8; 2048];
+        let result = their_tun.decapsulate(None, &tampered, &mut dst);
+        assert!(
+            matches!(result, TunnResult::Err(WireGuardError::InvalidMac)),
+            "tampered PQ MAC1 must be rejected, got {:?}",
+            result
+        );
+
+        // A pristine PQ init from a fresh initiator must still be accepted.
+        let (mut my_tun2, mut their_tun2) = create_two_hybrid_tuns();
+        let good = create_handshake_init(&mut my_tun2);
+        let mut dst2 = vec![0u8; 2048];
+        let ok = their_tun2.decapsulate(None, &good, &mut dst2);
+        assert!(
+            matches!(ok, TunnResult::WriteToNetwork(_)),
+            "valid PQ init must be accepted, got {:?}",
+            ok
+        );
+    }
+
     #[test]
     fn hybrid_one_ip_packet() {
         let (mut my_tun, mut their_tun) = create_two_hybrid_tuns();

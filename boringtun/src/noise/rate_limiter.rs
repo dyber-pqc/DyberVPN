@@ -181,14 +181,61 @@ impl RateLimiter {
     ) -> Result<Packet<'a>, TunnResult<'b>> {
         let packet = Tunn::parse_incoming_packet(src)?;
 
-        // Verify and rate limit handshake messages only
-        if let Packet::HandshakeInit(HandshakeInit { sender_idx, .. })
-        | Packet::HandshakeResponse(HandshakeResponse { sender_idx, .. }) = packet
-        {
-            let (msg, macs) = src.split_at(src.len() - 32);
-            let (mac1, mac2) = macs.split_at(16);
+        // Determine MAC1/MAC2 parameters for every handshake message type —
+        // classic AND post-quantum (security audit H1). Previously only the
+        // two classic types were MAC1-verified and rate-limited; the PQ types
+        // fell straight through, letting an off-path attacker flood expensive
+        // ML-KEM/ML-DSA handshakes with no cheap MAC1 gate and no cookie/rate
+        // limiting (CPU-exhaustion DoS + amplification).
+        //
+        // For classic messages MAC1/MAC2 are the trailing 32 bytes. For PQ
+        // messages the ML-KEM material is appended *after* the MACs, so the
+        // MACs sit at the fixed classic-message offset. Crucially, PQ messages
+        // compute their MACs over the classic header carrying the *original*
+        // message type (1 or 2) and only afterwards overwrite bytes 0..4 with
+        // the PQ type — so we reconstruct the original type before verifying.
+        //
+        // Returns (mac1_offset, classic_message_type, sender_idx).
+        let mac_params: Option<(usize, u32, u32)> = match &packet {
+            Packet::HandshakeInit(HandshakeInit { sender_idx, .. }) => {
+                Some((super::HANDSHAKE_INIT_SZ - 32, super::HANDSHAKE_INIT, *sender_idx))
+            }
+            Packet::HandshakeResponse(HandshakeResponse { sender_idx, .. }) => {
+                Some((super::HANDSHAKE_RESP_SZ - 32, super::HANDSHAKE_RESP, *sender_idx))
+            }
+            Packet::HandshakeInitPq(p) => {
+                Some((super::HANDSHAKE_INIT_SZ - 32, super::HANDSHAKE_INIT, p.sender_idx))
+            }
+            Packet::HandshakeInitPqAuth(p) => {
+                Some((super::HANDSHAKE_INIT_SZ - 32, super::HANDSHAKE_INIT, p.sender_idx))
+            }
+            Packet::HandshakeResponsePq(p) => {
+                Some((super::HANDSHAKE_RESP_SZ - 32, super::HANDSHAKE_RESP, p.sender_idx))
+            }
+            Packet::HandshakeResponsePqAuth(p) => {
+                Some((super::HANDSHAKE_RESP_SZ - 32, super::HANDSHAKE_RESP, p.sender_idx))
+            }
+            _ => None,
+        };
 
-            let computed_mac1 = b2s_keyed_mac_16(&self.mac1_key, msg);
+        if let Some((mac1_off, classic_type, sender_idx)) = mac_params {
+            if src.len() < mac1_off + 32 {
+                return Err(TunnResult::Err(WireGuardError::InvalidPacket));
+            }
+
+            // Reconstruct the classic header (bytes preceding MAC1) with the
+            // original message type. For classic packets this leaves the bytes
+            // unchanged; for PQ packets it restores type 1/2 so the MAC matches
+            // what the sender computed. Max header length is 116 (init).
+            let mut header_buf = [0u8; super::HANDSHAKE_INIT_SZ - 32];
+            let header = &mut header_buf[..mac1_off];
+            header.copy_from_slice(&src[..mac1_off]);
+            header[0..4].copy_from_slice(&classic_type.to_le_bytes());
+
+            let mac1 = &src[mac1_off..mac1_off + 16];
+            let mac2 = &src[mac1_off + 16..mac1_off + 32];
+
+            let computed_mac1 = b2s_keyed_mac_16(&self.mac1_key, header);
             constant_time_compare(&computed_mac1[..16], mac1)
                 .map_err(|_| TunnResult::Err(WireGuardError::InvalidMac))?;
 
@@ -200,7 +247,7 @@ impl RateLimiter {
 
                 // Only given an address can we validate mac2
                 let cookie = self.current_cookie(addr);
-                let computed_mac2 = b2s_keyed_mac_16_2(&cookie, msg, mac1);
+                let computed_mac2 = b2s_keyed_mac_16_2(&cookie, header, mac1);
 
                 if constant_time_compare(&computed_mac2[..16], mac2).is_err() {
                     let cookie_packet = self
