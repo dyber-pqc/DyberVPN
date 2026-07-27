@@ -1248,11 +1248,7 @@ async fn run_posture_check() -> Result<String, String> {
         .filter(|c| c["passed"].as_bool().unwrap_or(false))
         .map(|c| c["weight"].as_u64().unwrap_or(0) as u32)
         .sum();
-    let score = if total_weight > 0 {
-        (earned * 100) / total_weight
-    } else {
-        100
-    };
+    let score = (earned * 100).checked_div(total_weight).unwrap_or(100);
 
     let result = serde_json::json!({
         "score": score,
