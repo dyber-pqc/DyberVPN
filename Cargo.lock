@@ -768,7 +768,7 @@ checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
 
 [[package]]
 name = "dybervpn-broker"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -795,7 +795,7 @@ dependencies = [
 
 [[package]]
 name = "dybervpn-cli"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "dybervpn-metrics"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "axum",
  "chrono",
@@ -835,7 +835,7 @@ dependencies = [
 
 [[package]]
 name = "dybervpn-protocol"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "base64",
  "blake2",
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "dybervpn-tunnel"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
