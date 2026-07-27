@@ -678,7 +678,7 @@ impl Handshake {
         } else {
             self.state = HandshakeState::None;
         }
-        Ok(Session::new(local_index, peer_index, temp3, temp2))
+        Ok(Session::new(local_index, peer_index, temp3, temp2, chaining_key))
     }
 
     pub(super) fn receive_cookie_reply(
@@ -919,7 +919,7 @@ impl Handshake {
 
         let dst = self.append_mac1_and_mac2(local_index, &mut dst[..super::HANDSHAKE_RESP_SZ])?;
 
-        Ok((dst, Session::new(local_index, peer_index, temp2, temp3)))
+        Ok((dst, Session::new(local_index, peer_index, temp2, temp3, chaining_key)))
     }
 }
 

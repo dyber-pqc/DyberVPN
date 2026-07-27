@@ -275,6 +275,35 @@ mod tests {
         assert_ne!(send_key1, recv_key1);
     }
 
+    /// Regression test for security audit finding C1: the classical chaining
+    /// key (carrying the X25519 secret) must materially affect the derived
+    /// hybrid session keys. If the classical secret were dropped (e.g. a
+    /// zero chaining key), two handshakes with different classical secrets
+    /// but the same PQ secret would collide — exactly the flaw that let an
+    /// active MITM take over hybrid tunnels.
+    #[test]
+    fn test_classical_chaining_key_is_not_dropped() {
+        let pq_ss = [9u8; 32];
+
+        let real_ck = [1u8; 32];
+        let other_ck = [2u8; 32];
+        let zero_ck = [0u8; 32];
+
+        let (send_real, recv_real) = derive_hybrid_session_keys(&real_ck, Some(&pq_ss));
+        let (send_other, recv_other) = derive_hybrid_session_keys(&other_ck, Some(&pq_ss));
+        let (send_zero, recv_zero) = derive_hybrid_session_keys(&zero_ck, Some(&pq_ss));
+
+        // Different classical secrets must yield different keys even when the
+        // PQ shared secret is identical.
+        assert_ne!(send_real, send_other);
+        assert_ne!(recv_real, recv_other);
+
+        // And a real (non-zero) chaining key must not collide with the old
+        // all-zero placeholder behaviour.
+        assert_ne!(send_real, send_zero);
+        assert_ne!(recv_real, recv_zero);
+    }
+
     #[test]
     fn test_initiator_responder_flow() {
         // Initiator generates ephemeral PQ keypair

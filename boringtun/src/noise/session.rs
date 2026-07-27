@@ -159,6 +159,7 @@ impl Session {
         peer_index: u32,
         receiving_key: [u8; 32],
         sending_key: [u8; 32],
+        chaining_key: [u8; 32],
     ) -> Session {
         Session {
             receiving_index: local_index,
@@ -169,19 +170,17 @@ impl Session {
             sender: LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &sending_key).unwrap()),
             sending_key_counter: AtomicUsize::new(0),
             receiving_key_counter: Mutex::new(Default::default()),
-            chaining_key: [0u8; 32], // Will be set if needed for hybrid
+            // Store the genuine post-Noise chaining key so hybrid/PQ key
+            // derivation mixes in the classical (X25519) secret. Passing a
+            // zero key here silently drops the classical contribution and
+            // voids the hybrid security guarantee (see security audit C1).
+            chaining_key,
         }
     }
 
     /// Get the chaining key (for hybrid key derivation)
     pub(super) fn chaining_key(&self) -> &[u8; 32] {
         &self.chaining_key
-    }
-
-    /// Set the chaining key (used during handshake for hybrid derivation)
-    #[allow(dead_code)]
-    pub(super) fn set_chaining_key(&mut self, key: [u8; 32]) {
-        self.chaining_key = key;
     }
 
     /// Set hybrid session keys (after PQ key exchange)
@@ -349,5 +348,26 @@ mod tests {
         assert!(c.mark_did_receive(N_BITS * 3 + 70).is_err());
         assert!(c.mark_did_receive(N_BITS * 3 + 71).is_err());
         assert!(c.mark_did_receive(N_BITS * 3 + 72).is_err());
+    }
+
+    /// Regression test for security audit finding C1: `Session::new` must
+    /// persist the genuine post-Noise chaining key so that hybrid/PQ key
+    /// derivation mixes in the classical (X25519) secret. Previously the
+    /// chaining key was hard-coded to zero, silently dropping the classical
+    /// contribution and voiding the hybrid security guarantee.
+    #[test]
+    fn test_session_stores_chaining_key() {
+        let ck = [7u8; 32];
+        let session = Session::new(1, 2, [3u8; 32], [4u8; 32], ck);
+        assert_eq!(
+            session.chaining_key(),
+            &ck,
+            "Session must store the chaining key passed to new(), not zero"
+        );
+        assert_ne!(
+            session.chaining_key(),
+            &[0u8; 32],
+            "chaining key must not be the all-zero placeholder"
+        );
     }
 }

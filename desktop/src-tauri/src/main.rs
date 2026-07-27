@@ -163,11 +163,40 @@ fn find_dybervpn_binary() -> PathBuf {
     PathBuf::from("dybervpn")
 }
 
+// ─── Interface Name Validation ────────────────────────────
+
+/// Validate a network interface name before it is used to build any OS
+/// command or filesystem path.
+///
+/// Interface names come from imported (untrusted) TOML configs. Without this
+/// check, a crafted `interface.name` such as `dvpn0'; calc.exe #` is
+/// string-interpolated into a PowerShell `-Command` and executed — a remote
+/// code-execution vector triggered simply by importing a config and clicking
+/// Connect (security audit finding C5).
+///
+/// We restrict to a conservative allowlist (`[A-Za-z0-9_-]`, 1..=32 chars)
+/// that covers every legitimate OS interface name while making shell /
+/// PowerShell metacharacters impossible.
+fn valid_interface_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 // ─── OS Traffic Counters ──────────────────────────────────
 
 /// Read rx/tx bytes from OS network interface counters.
 /// Returns (rx_bytes, tx_bytes).
 async fn read_interface_traffic(iface: &str) -> (u64, u64) {
+    // Defense-in-depth: never build an OS command or path from an interface
+    // name that is not on the strict allowlist (security audit C5). This is
+    // the authoritative barrier even if an unvalidated name reaches here.
+    if !valid_interface_name(iface) {
+        return (0, 0);
+    }
+
     #[cfg(target_os = "linux")]
     {
         let rx_path = format!("/sys/class/net/{}/statistics/rx_bytes", iface);
@@ -382,6 +411,19 @@ async fn import_config(path: String) -> Result<TunnelConfig, String> {
         .and_then(|i| i.get("name"))
         .and_then(|v| v.as_str())
         .map(String::from);
+
+    // Reject configs whose interface name is not on the strict allowlist.
+    // Such a name would later be interpolated into OS commands (security
+    // audit C5), so a hostile config must never be imported in the first place.
+    if let Some(ref n) = name {
+        if !valid_interface_name(n) {
+            return Err(format!(
+                "Invalid interface name {:?}: must be 1-32 characters of [A-Za-z0-9_-]",
+                n
+            ));
+        }
+    }
+
     let address = iface
         .and_then(|i| i.get("address"))
         .and_then(|v| v.as_str())
@@ -447,6 +489,9 @@ async fn connect_tunnel(
                     .and_then(|v| v.as_str())
                     .map(String::from)
             })
+            // Only trust names on the strict allowlist; otherwise fall back to
+            // the safe default rather than storing an injectable value (C5).
+            .filter(|n| valid_interface_name(n))
             .unwrap_or_else(|| "dvpn0".to_string())
     } else {
         "dvpn0".to_string()
@@ -1296,4 +1341,35 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running DyberVPN");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_interface_name;
+
+    #[test]
+    fn accepts_legitimate_interface_names() {
+        for ok in ["dvpn0", "wg0", "eth0", "tun-1", "my_iface", "A", &"x".repeat(32)] {
+            assert!(valid_interface_name(ok), "should accept {ok:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_injection_and_malformed_names() {
+        // The C5 exploit payload and other unsafe inputs must all be rejected.
+        for bad in [
+            "",
+            "dvpn0'; Start-Process calc.exe; Write-Output 'x",
+            "dvpn0'; calc.exe #",
+            "name with spaces",
+            "back`tick",
+            "$(whoami)",
+            "a/b",
+            "..",
+            "../etc",
+            &"x".repeat(33),
+        ] {
+            assert!(!valid_interface_name(bad), "should reject {bad:?}");
+        }
+    }
 }
