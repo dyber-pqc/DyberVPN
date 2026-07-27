@@ -16,7 +16,7 @@ use boringtun::noise::handshake::parse_handshake_anon;
 use boringtun::noise::{HybridHandshakeState, Packet, Tunn, TunnResult};
 use dashmap::DashMap;
 use dybervpn_tunnel::audit::AuditLogger;
-use dybervpn_tunnel::policy::PolicyEngine;
+use dybervpn_tunnel::policy::{PolicyAction, PolicyEngine};
 use dybervpn_tunnel::revocation::RevocationEngine;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
@@ -126,6 +126,7 @@ impl Broker {
         let reaper_peers = Arc::clone(&self.peers);
         let reaper_registry = Arc::clone(&self.registry);
         let reaper_endpoint_map = Arc::clone(&self.endpoint_map);
+        let reaper_client_ip_map = Arc::clone(&self.client_ip_map);
         let heartbeat_timeout = self.config.heartbeat_timeout;
         let session_timeout = self.config.session_timeout;
 
@@ -136,6 +137,7 @@ impl Broker {
                     &reaper_peers,
                     &reaper_registry,
                     &reaper_endpoint_map,
+                    &reaper_client_ip_map,
                     heartbeat_timeout,
                     session_timeout,
                 );
@@ -172,17 +174,22 @@ impl Broker {
         // We need to get the peer, decapsulate, then decide what to do
         let mut decap_buf = vec![0u8; 65535];
 
-        // First, decapsulate with the source peer
-        let result = {
+        // First, decapsulate with the source peer. Capture the peer's role and
+        // service name while we hold the lock — they are needed for the
+        // source-IP and policy checks below.
+        let (result, src_role, src_name) = {
             let mut peer_ref = match self.peers.get_mut(&peer_key) {
                 Some(p) => p,
                 None => return,
             };
             peer_ref.touch();
             peer_ref.endpoint = src;
-            peer_ref
+            let role = peer_ref.role;
+            let name = peer_ref.service_name.clone();
+            let r = peer_ref
                 .tunn
-                .decapsulate(Some(src.ip()), packet, &mut decap_buf)
+                .decapsulate(Some(src.ip()), packet, &mut decap_buf);
+            (r, role, name)
         };
 
         match result {
@@ -190,12 +197,23 @@ impl Broker {
             | TunnResult::WriteToTunnelV6(plaintext, _) => {
                 let plaintext = plaintext.to_vec();
 
-                // Extract src/dst IP for routing and learn Client tunnel IPs
-                if let Some((src_ip, dst_ip, _, _)) =
+                // Extract src/dst IP + L4 info for anti-spoofing and policy.
+                if let Some((src_ip, dst_ip, dst_port, proto)) =
                     dybervpn_tunnel::policy::inspect_packet(&plaintext)
                 {
-                    // Learn the source tunnel IP → peer key mapping (for reverse routing)
-                    self.client_ip_map.insert(src_ip, peer_key);
+                    // C4: reject spoofed source IPs and only learn Client
+                    // tunnel IPs from their authorized owner.
+                    if !self.authorize_source_ip(&peer_key, src_role, src_ip) {
+                        return;
+                    }
+
+                    // C2: enforce the access-control policy on the live data
+                    // path — the whole point of a Zero-Trust relay.
+                    if !self.policy_allows(&peer_key, src_name.as_deref(), dst_ip, dst_port, proto)
+                    {
+                        return;
+                    }
+
                     self.route_plaintext(&peer_key, dst_ip, &plaintext).await;
                 }
             }
@@ -211,6 +229,76 @@ impl Broker {
 
             TunnResult::Err(e) => {
                 tracing::debug!("Decapsulate error from {}: {:?}", src, e);
+            }
+        }
+    }
+
+    /// C4: Authorize a decrypted packet's inner source IP and learn Client
+    /// tunnel IPs. Returns `false` if the packet must be dropped.
+    ///
+    /// A tunnel IP is bound to the first peer that uses it. A packet whose
+    /// source IP is already bound to a *different* peer is a spoofing attempt
+    /// (e.g. an attacker forging a victim's tunnel IP to hijack reverse
+    /// routing) and is dropped. Only Clients populate the reverse-routing map;
+    /// Connectors are routed by advertised CIDR, so letting them claim tunnel
+    /// IPs would itself enable hijacking.
+    fn authorize_source_ip(&self, peer_key: &[u8; 32], role: PeerRole, src_ip: IpAddr) -> bool {
+        if let Some(existing) = self.client_ip_map.get(&src_ip) {
+            if *existing.value() != *peer_key {
+                tracing::warn!(
+                    "Dropping spoofed packet: source {} is bound to {} but arrived from {}",
+                    src_ip,
+                    hex::encode(&existing.value()[..4]),
+                    hex::encode(&peer_key[..4]),
+                );
+                return false;
+            }
+            return true;
+        }
+
+        // First time we see this source IP. Bind it — but only for Clients.
+        if role == PeerRole::Client {
+            self.client_ip_map.insert(src_ip, *peer_key);
+        }
+        true
+    }
+
+    /// C2: Evaluate the access-control policy for a decrypted packet. Returns
+    /// `false` (drop) if the policy denies it. When no policy is configured
+    /// (disabled), all packets are allowed, preserving prior behaviour.
+    fn policy_allows(
+        &self,
+        peer_key: &[u8; 32],
+        peer_name: Option<&str>,
+        dst_ip: IpAddr,
+        dst_port: Option<u16>,
+        proto: u8,
+    ) -> bool {
+        // `evaluate` takes `&mut self`; recover a poisoned lock rather than
+        // panicking the whole data plane.
+        let mut policy = match self.policy.write() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        if !policy.is_enabled() {
+            return true;
+        }
+
+        let (action, reason) =
+            policy.evaluate(peer_key, peer_name, dst_ip, dst_port, Some(proto));
+        match action {
+            PolicyAction::Allow => true,
+            PolicyAction::Deny => {
+                tracing::debug!(
+                    "Policy denied {} -> {} port={:?} proto={} ({})",
+                    hex::encode(&peer_key[..4]),
+                    dst_ip,
+                    dst_port,
+                    proto,
+                    reason
+                );
+                false
             }
         }
     }
@@ -408,6 +496,7 @@ pub fn reap_stale_peers(
     peers: &DashMap<[u8; 32], BrokerPeer>,
     registry: &ServiceRegistry,
     endpoint_map: &DashMap<SocketAddr, [u8; 32]>,
+    client_ip_map: &DashMap<IpAddr, [u8; 32]>,
     heartbeat_timeout: Duration,
     session_timeout: Duration,
 ) {
@@ -428,6 +517,9 @@ pub fn reap_stale_peers(
     for key in to_remove {
         if let Some((_, peer)) = peers.remove(&key) {
             endpoint_map.remove(&peer.endpoint);
+            // Release any tunnel-IP bindings owned by this peer so a future
+            // client can reuse the address (and stale bindings can't linger).
+            client_ip_map.retain(|_, owner| *owner != key);
             if peer.role == PeerRole::Connector {
                 registry.unregister(&key);
             }

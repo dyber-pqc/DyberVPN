@@ -107,37 +107,124 @@ async fn handle_connector(
                     continue;
                 }
 
-                // Verify ML-DSA signature (if in PQ mode)
-                if config.mode.uses_pq_auth() {
-                    if let Some(ref sig_b64) = mldsa_signature {
-                        let sig_bytes = base64::decode(sig_b64).map_err(|_| {
-                            BrokerError::AuthFailed("invalid signature base64".into())
-                        })?;
-
-                        // For now we'd need the connector's ML-DSA public key
-                        // from a pre-registered key store. For the initial impl,
-                        // we accept the registration if we have a valid signature format.
-                        // Full key store lookup will be added in a future iteration.
-                        tracing::debug!(
-                            "ML-DSA signature present ({} bytes), timestamp={}",
-                            sig_bytes.len(),
-                            timestamp,
-                        );
-                    } else {
-                        tracing::warn!("PQ mode requires ML-DSA signature for registration");
-                        send_register_ack(&mut writer, false, "ML-DSA signature required").await?;
+                // Authorization: the connector must be on the fail-closed
+                // allowlist (security audit C3). This replaces the previous
+                // behaviour of accepting any key that presented a well-formed
+                // (but never verified) signature.
+                let authz = match config
+                    .authorized_connectors
+                    .iter()
+                    .find(|c| c.public_key == pk)
+                {
+                    Some(c) => c,
+                    None => {
+                        if config.authorized_connectors.is_empty() {
+                            tracing::error!(
+                                "Rejecting connector {}: no [[authorized_connector]] entries are \
+                                 configured — the Broker is fail-closed. Add the connector's \
+                                 X25519 (and ML-DSA) public key to the broker config to allow it.",
+                                hex::encode(&pk[..4])
+                            );
+                        } else {
+                            tracing::warn!(
+                                "Rejecting connector {}: not in the authorized_connectors allowlist",
+                                hex::encode(&pk[..4])
+                            );
+                        }
+                        send_register_ack(&mut writer, false, "connector not authorized").await?;
                         continue;
+                    }
+                };
+
+                // Verify the ML-DSA registration signature against the
+                // connector's *pre-registered* ML-DSA public key (security
+                // audit C3). Previously the signature was decoded and its
+                // length logged, but never actually verified.
+                if let Some(ref mldsa_pk) = authz.mldsa_public_key {
+                    let sig_b64 = match mldsa_signature {
+                        Some(ref s) => s,
+                        None => {
+                            send_register_ack(&mut writer, false, "ML-DSA signature required")
+                                .await?;
+                            continue;
+                        }
+                    };
+                    let sig_bytes = match base64::decode(sig_b64) {
+                        Ok(b) => b,
+                        Err(_) => {
+                            send_register_ack(&mut writer, false, "invalid signature base64")
+                                .await?;
+                            continue;
+                        }
+                    };
+                    match crate::auth::verify_mldsa_auth(mldsa_pk, &pk, timestamp, &sig_bytes) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            tracing::warn!(
+                                "Rejecting connector {}: ML-DSA signature invalid or timestamp stale",
+                                hex::encode(&pk[..4])
+                            );
+                            send_register_ack(&mut writer, false, "ML-DSA verification failed")
+                                .await?;
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Connector {} auth error: {}",
+                                hex::encode(&pk[..4]),
+                                e
+                            );
+                            send_register_ack(&mut writer, false, "ML-DSA verification error")
+                                .await?;
+                            continue;
+                        }
+                    }
+                } else if config.mode.uses_pq_auth() {
+                    // pq-only mode mandates post-quantum connector authentication.
+                    tracing::warn!(
+                        "Rejecting connector {}: pq-only mode requires a configured ML-DSA public key",
+                        hex::encode(&pk[..4])
+                    );
+                    send_register_ack(
+                        &mut writer,
+                        false,
+                        "connector has no ML-DSA key configured for pq-only mode",
+                    )
+                    .await?;
+                    continue;
+                }
+
+                // Authorize advertised routes: each must be covered by (equal
+                // to or more specific than) one of the connector's allowed
+                // CIDRs (security audit C4). Invalid or unauthorized routes are
+                // dropped rather than silently trusted, preventing route hijack.
+                let mut routes: Vec<(IpAddr, u8)> = Vec::new();
+                for r in &advertised_routes {
+                    match crate::config::parse_cidr(r) {
+                        Ok(route) => {
+                            if route_is_authorized(route, &authz.allowed_routes) {
+                                routes.push(route);
+                            } else {
+                                tracing::warn!(
+                                    "Connector {} advertised unauthorized route {} — dropping",
+                                    hex::encode(&pk[..4]),
+                                    r
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Connector {} sent invalid route {}: {}",
+                                hex::encode(&pk[..4]),
+                                r,
+                                e
+                            );
+                        }
                     }
                 }
 
-                // Parse advertised routes
-                let routes: Vec<(IpAddr, u8)> = advertised_routes
-                    .iter()
-                    .filter_map(|r| parse_cidr(r).ok())
-                    .collect();
-
                 if routes.is_empty() {
-                    send_register_ack(&mut writer, false, "no valid routes").await?;
+                    send_register_ack(&mut writer, false, "no authorized routes").await?;
                     continue;
                 }
 
@@ -266,15 +353,39 @@ pub async fn handle_connector_for_test(
     handle_connector(stream, addr, config, peers, registry, audit, revocation).await
 }
 
-/// Parse a CIDR string like "10.1.0.0/16"
-fn parse_cidr(s: &str) -> Result<(IpAddr, u8), String> {
-    let parts: Vec<&str> = s.split('/').collect();
-    if parts.len() != 2 {
-        return Err(format!("invalid CIDR: {}", s));
+/// Returns true if `route` is covered by one of the connector's `allowed`
+/// CIDRs — i.e. the advertised route is equal to, or more specific than, an
+/// allowed CIDR (same network bits and a prefix at least as long).
+fn route_is_authorized(route: (IpAddr, u8), allowed: &[(IpAddr, u8)]) -> bool {
+    let (net, prefix) = route;
+    allowed.iter().any(|&(allowed_net, allowed_prefix)| {
+        prefix >= allowed_prefix && crate::config::cidr_contains(allowed_net, allowed_prefix, net)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::route_is_authorized;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn v4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
     }
-    let ip: IpAddr = parts[0].parse().map_err(|e| format!("invalid IP: {}", e))?;
-    let prefix: u8 = parts[1]
-        .parse()
-        .map_err(|e| format!("invalid prefix: {}", e))?;
-    Ok((ip, prefix))
+
+    #[test]
+    fn route_authorization_enforces_subset() {
+        // Connector is allowed only 10.1.0.0/16.
+        let allowed = vec![(v4(10, 1, 0, 0), 16)];
+
+        // Equal route: authorized.
+        assert!(route_is_authorized((v4(10, 1, 0, 0), 16), &allowed));
+        // More specific (subset): authorized.
+        assert!(route_is_authorized((v4(10, 1, 5, 0), 24), &allowed));
+        // Broader (superset /8): NOT authorized — this is the route-hijack case.
+        assert!(!route_is_authorized((v4(10, 0, 0, 0), 8), &allowed));
+        // A default route grab: NOT authorized.
+        assert!(!route_is_authorized((v4(0, 0, 0, 0), 0), &allowed));
+        // Different network: NOT authorized.
+        assert!(!route_is_authorized((v4(192, 168, 1, 0), 24), &allowed));
+    }
 }

@@ -3330,10 +3330,25 @@ fn cmd_broker(config_path: &PathBuf) -> Result<()> {
         .parse()
         .context("Invalid listen_control address")?;
 
+    // Resolve the fail-closed connector allowlist (security audit C3/C4).
+    let authorized_connectors = section
+        .authorized_connector
+        .iter()
+        .map(|c| c.resolve())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("Invalid [[authorized_connector]] entry: {}", e))?;
+    if authorized_connectors.is_empty() {
+        tracing::warn!(
+            "No [[authorized_connector]] entries configured — the Broker will reject ALL \
+             connector registrations (fail-closed). Add authorized connectors to enable ZTNA."
+        );
+    }
+
     let broker_config = BrokerConfig {
         listen_udp,
         listen_control,
         private_key,
+        authorized_connectors,
         pq_private_key: section
             .pq_private_key
             .as_ref()

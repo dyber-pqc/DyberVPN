@@ -33,7 +33,7 @@ pub mod session;
 
 #[cfg(test)]
 mod tests {
-    use crate::config::BrokerConfig;
+    use crate::config::{AuthorizedConnector, BrokerConfig};
     use crate::peer::{BrokerPeer, PeerRole};
     use crate::registry::ServiceRegistry;
     use crate::session;
@@ -87,8 +87,18 @@ mod tests {
             .unwrap();
         let control_addr = listener.local_addr().unwrap();
 
+        // Generate the Connector key up front so it can be added to the
+        // fail-closed allowlist the Broker now enforces (security audit C3).
+        let (_conn_secret, conn_public) = gen_keypair();
+        let conn_pk = conn_public.to_bytes();
+
         let config = Arc::new(BrokerConfig {
             listen_control: control_addr,
+            authorized_connectors: vec![AuthorizedConnector {
+                public_key: conn_pk,
+                mldsa_public_key: None,
+                allowed_routes: vec![(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 0)), 16)],
+            }],
             ..config
         });
 
@@ -119,11 +129,7 @@ mod tests {
         let (reader, mut writer) = stream.into_split();
         let mut lines = BufReader::new(reader).lines();
 
-        // Generate a Connector key
-        let (_conn_secret, conn_public) = gen_keypair();
-        let conn_pk = conn_public.to_bytes();
-
-        // Send Register
+        // Send Register (conn_pk generated above and added to the allowlist)
         let register = ControlMessage::Register {
             public_key: base64::encode(conn_pk),
             pq_public_key: None,
@@ -296,6 +302,202 @@ mod tests {
 
         // Verify no peer was registered
         assert_eq!(peers.len(), 0, "Revoked peer should not be registered");
+        assert_eq!(registry.route_count(), 0);
+    }
+
+    // ─── C3/C4 regression: connector authorization ───────────────────────────
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    /// Run the control plane for a single Register and return the ack plus the
+    /// resulting peer/registry state.
+    async fn register_once(
+        config: BrokerConfig,
+        register: &ControlMessage,
+    ) -> (
+        ControlMessage,
+        Arc<DashMap<[u8; 32], BrokerPeer>>,
+        Arc<ServiceRegistry>,
+    ) {
+        let peers: Arc<DashMap<[u8; 32], BrokerPeer>> = Arc::new(DashMap::new());
+        let registry = Arc::new(ServiceRegistry::new());
+        let audit = AuditLogger::disabled();
+        let revocation = Arc::new(RevocationEngine::disabled());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let control_addr = listener.local_addr().unwrap();
+        let config = Arc::new(BrokerConfig {
+            listen_control: control_addr,
+            ..config
+        });
+
+        let ctrl_config = Arc::clone(&config);
+        let ctrl_peers = Arc::clone(&peers);
+        let ctrl_registry = Arc::clone(&registry);
+        let ctrl_audit = audit.clone();
+        let ctrl_revocation = Arc::clone(&revocation);
+        tokio::spawn(async move {
+            let (stream, addr) = listener.accept().await.unwrap();
+            let _ = crate::control::handle_connector_for_test(
+                stream,
+                addr,
+                ctrl_config,
+                ctrl_peers,
+                ctrl_registry,
+                ctrl_audit,
+                ctrl_revocation,
+            )
+            .await;
+        });
+
+        let stream = TcpStream::connect(control_addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut lines = BufReader::new(reader).lines();
+        let json = serde_json::to_string(register).unwrap();
+        writer.write_all(json.as_bytes()).await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.flush().await.unwrap();
+        let line = lines.next_line().await.unwrap().unwrap();
+        let ack: ControlMessage = serde_json::from_str(&line).unwrap();
+        (ack, peers, registry)
+    }
+
+    /// C3: a connector not on the allowlist must be rejected (fail-closed).
+    #[tokio::test]
+    async fn test_unauthorized_connector_rejected() {
+        let (broker_secret, _) = gen_keypair();
+        let config = test_broker_config(broker_secret.to_bytes()); // empty allowlist
+        let (_c, conn_public) = gen_keypair();
+
+        let register = ControlMessage::Register {
+            public_key: base64::encode(conn_public.to_bytes()),
+            pq_public_key: None,
+            mldsa_signature: None,
+            advertised_routes: vec!["10.0.0.0/8".to_string()],
+            service_name: "rogue".to_string(),
+            timestamp: now_secs(),
+        };
+
+        let (ack, peers, registry) = register_once(config, &register).await;
+        match ack {
+            ControlMessage::RegisterAck { success, error } => {
+                assert!(!success, "unauthorized connector must be rejected");
+                assert!(error.unwrap().contains("not authorized"));
+            }
+            other => panic!("expected RegisterAck, got {:?}", other),
+        }
+        assert_eq!(peers.len(), 0);
+        assert_eq!(registry.route_count(), 0);
+    }
+
+    /// C3: the ML-DSA registration signature must actually be verified — a
+    /// valid one is accepted, a tampered one is rejected.
+    #[tokio::test]
+    async fn test_connector_mldsa_signature_enforced() {
+        use crate::auth::sign_mldsa_auth;
+
+        let (broker_secret, _) = gen_keypair();
+        let (_c, conn_public) = gen_keypair();
+        let conn_pk = conn_public.to_bytes();
+
+        let backend = dybervpn_protocol::select_backend();
+        let (mldsa_pk, mldsa_sk) = backend.mldsa_keygen().unwrap();
+
+        let mut config = test_broker_config(broker_secret.to_bytes());
+        config.mode = OperatingMode::PqOnly;
+        config.authorized_connectors = vec![AuthorizedConnector {
+            public_key: conn_pk,
+            mldsa_public_key: Some(mldsa_pk.as_bytes().to_vec()),
+            allowed_routes: vec![(IpAddr::V4(Ipv4Addr::new(10, 5, 0, 0)), 16)],
+        }];
+
+        let ts = now_secs();
+        let good_sig = sign_mldsa_auth(mldsa_sk.as_bytes(), &conn_pk, ts).unwrap();
+
+        // Valid signature → accepted.
+        let register_ok = ControlMessage::Register {
+            public_key: base64::encode(conn_pk),
+            pq_public_key: None,
+            mldsa_signature: Some(base64::encode(&good_sig)),
+            advertised_routes: vec!["10.5.1.0/24".to_string()],
+            service_name: "svc".to_string(),
+            timestamp: ts,
+        };
+        let (ack, peers, _r) = register_once(config.clone(), &register_ok).await;
+        assert!(
+            matches!(
+                ack,
+                ControlMessage::RegisterAck {
+                    success: true,
+                    ..
+                }
+            ),
+            "valid ML-DSA signature must be accepted, got {:?}",
+            ack
+        );
+        assert_eq!(peers.len(), 1);
+
+        // Tampered signature → rejected.
+        let mut bad_sig = good_sig.clone();
+        bad_sig[0] ^= 0xFF;
+        let register_bad = ControlMessage::Register {
+            public_key: base64::encode(conn_pk),
+            pq_public_key: None,
+            mldsa_signature: Some(base64::encode(&bad_sig)),
+            advertised_routes: vec!["10.5.1.0/24".to_string()],
+            service_name: "svc".to_string(),
+            timestamp: ts,
+        };
+        let (ack2, peers2, _r2) = register_once(config, &register_bad).await;
+        match ack2 {
+            ControlMessage::RegisterAck { success, error } => {
+                assert!(!success, "tampered signature must be rejected");
+                assert!(error.unwrap().contains("verification failed"));
+            }
+            other => panic!("expected RegisterAck, got {:?}", other),
+        }
+        assert_eq!(peers2.len(), 0);
+    }
+
+    /// C4: an authorized connector may not advertise routes broader than its
+    /// allowlisted CIDRs — a route-hijack attempt yields no authorized routes.
+    #[tokio::test]
+    async fn test_connector_route_hijack_rejected() {
+        let (broker_secret, _) = gen_keypair();
+        let (_c, conn_public) = gen_keypair();
+        let conn_pk = conn_public.to_bytes();
+
+        let mut config = test_broker_config(broker_secret.to_bytes());
+        config.authorized_connectors = vec![AuthorizedConnector {
+            public_key: conn_pk,
+            mldsa_public_key: None,
+            allowed_routes: vec![(IpAddr::V4(Ipv4Addr::new(10, 9, 0, 0)), 16)],
+        }];
+
+        // Attempt to grab a broader /8 and a default route.
+        let register = ControlMessage::Register {
+            public_key: base64::encode(conn_pk),
+            pq_public_key: None,
+            mldsa_signature: None,
+            advertised_routes: vec!["10.0.0.0/8".to_string(), "0.0.0.0/0".to_string()],
+            service_name: "hijack".to_string(),
+            timestamp: now_secs(),
+        };
+
+        let (ack, peers, registry) = register_once(config, &register).await;
+        match ack {
+            ControlMessage::RegisterAck { success, error } => {
+                assert!(!success, "route hijack must be rejected");
+                assert!(error.unwrap().contains("no authorized routes"));
+            }
+            other => panic!("expected RegisterAck, got {:?}", other),
+        }
+        assert_eq!(peers.len(), 0);
         assert_eq!(registry.route_count(), 0);
     }
 
@@ -535,6 +737,7 @@ heartbeat_timeout = 180
         let peers: DashMap<[u8; 32], BrokerPeer> = DashMap::new();
         let registry = ServiceRegistry::new();
         let endpoint_map: DashMap<SocketAddr, [u8; 32]> = DashMap::new();
+        let client_ip_map: DashMap<IpAddr, [u8; 32]> = DashMap::new();
 
         let (secret, public) = gen_keypair();
         let pk = public.to_bytes();
@@ -558,6 +761,7 @@ heartbeat_timeout = 180
             &peers,
             &registry,
             &endpoint_map,
+            &client_ip_map,
             std::time::Duration::from_secs(3600),
             std::time::Duration::from_secs(3600),
         );
@@ -568,6 +772,7 @@ heartbeat_timeout = 180
             &peers,
             &registry,
             &endpoint_map,
+            &client_ip_map,
             std::time::Duration::from_secs(0),
             std::time::Duration::from_secs(0),
         );
