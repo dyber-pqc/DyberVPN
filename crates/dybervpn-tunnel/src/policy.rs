@@ -23,7 +23,7 @@
 //! [[access_control.role]]
 //! name = "engineering"
 //! peers = ["alice", "bob"]       # by peer name
-//! peer_keys = ["aabb..."]        # or by key fingerprint (first 8 hex)
+//! peer_keys = ["<base64-or-64-hex full public key>"]  # by full public key
 //!
 //! [[access_control.role.rule]]
 //! action = "allow"
@@ -89,7 +89,12 @@ pub struct RoleConfig {
     #[serde(default)]
     pub peers: Vec<String>,
 
-    /// Peer key fingerprints (first 8 hex chars of public key)
+    /// Full peer public keys assigned to this role (base64, or 64-char hex).
+    ///
+    /// Matched against the peer's complete 32-byte key. Truncated fingerprints
+    /// are intentionally not accepted: a short prefix is brute-forceable, so an
+    /// attacker could grind a key colliding with a privileged role's prefix and
+    /// inherit it (security audit H7).
     #[serde(default)]
     pub peer_keys: Vec<String>,
 
@@ -177,7 +182,7 @@ pub struct PolicyEngine {
     /// Default action when no rule matches
     default_action: PolicyAction,
     /// Compiled per-peer policies indexed by peer public key (first 8 hex)
-    peer_policies_by_fingerprint: HashMap<String, PeerPolicy>,
+    peer_policies_by_key: HashMap<String, PeerPolicy>,
     /// Compiled per-peer policies indexed by peer name
     peer_policies_by_name: HashMap<String, PeerPolicy>,
     /// External policy file path (for hot-reload)
@@ -185,6 +190,35 @@ pub struct PolicyEngine {
     /// Stats
     packets_allowed: u64,
     packets_denied: u64,
+}
+
+/// Normalize a configured peer-key string to the lowercase 64-char hex of the
+/// full 32-byte public key.
+///
+/// Accepts a base64-encoded 32-byte key or a 64-char hex string. Anything that
+/// does not resolve to exactly 32 bytes — including short "fingerprints" — is
+/// rejected (returns `None`), because matching on a truncated key is
+/// brute-forceable and would allow privilege escalation (security audit H7).
+fn normalize_peer_key(s: &str) -> Option<String> {
+    let s = s.trim();
+
+    // Try full hex first (64 chars → 32 bytes).
+    if s.len() == 64 {
+        if let Ok(bytes) = hex::decode(s) {
+            if bytes.len() == 32 {
+                return Some(hex::encode(bytes));
+            }
+        }
+    }
+
+    // Otherwise try base64 (must decode to exactly 32 bytes).
+    if let Ok(bytes) = base64::decode(s) {
+        if bytes.len() == 32 {
+            return Some(hex::encode(bytes));
+        }
+    }
+
+    None
 }
 
 impl PolicyEngine {
@@ -199,7 +233,7 @@ impl PolicyEngine {
         let mut engine = Self {
             enabled: config.enabled,
             default_action,
-            peer_policies_by_fingerprint: HashMap::new(),
+            peer_policies_by_key: HashMap::new(),
             peer_policies_by_name: HashMap::new(),
             policy_path: config.policy_path.as_ref().map(PathBuf::from),
             packets_allowed: 0,
@@ -235,7 +269,7 @@ impl PolicyEngine {
         Self {
             enabled: false,
             default_action: PolicyAction::Allow,
-            peer_policies_by_fingerprint: HashMap::new(),
+            peer_policies_by_key: HashMap::new(),
             peer_policies_by_name: HashMap::new(),
             policy_path: None,
             packets_allowed: 0,
@@ -273,11 +307,13 @@ impl PolicyEngine {
             return (PolicyAction::Allow, "disabled".to_string());
         }
 
-        // Look up by name first, then by fingerprint
-        let fingerprint = hex::encode(&peer_key[..4]);
+        // Look up by name first, then by the FULL public key (H7). Matching on
+        // a truncated fingerprint would let an attacker brute-force a colliding
+        // key and inherit a privileged role.
+        let key_hex = hex::encode(peer_key);
         let policy = peer_name
             .and_then(|n| self.peer_policies_by_name.get(n))
-            .or_else(|| self.peer_policies_by_fingerprint.get(&fingerprint));
+            .or_else(|| self.peer_policies_by_key.get(&key_hex));
 
         let rules = match policy {
             Some(p) => &p.rules,
@@ -344,7 +380,7 @@ impl PolicyEngine {
         let roles = Self::load_policy_file(&path)?;
         tracing::info!("Reloading {} roles from {}", roles.len(), path.display());
 
-        self.peer_policies_by_fingerprint.clear();
+        self.peer_policies_by_key.clear();
         self.peer_policies_by_name.clear();
         self.compile_roles(&roles);
 
@@ -393,15 +429,31 @@ impl PolicyEngine {
                     .or_insert_with(|| policy.clone());
             }
 
-            // Index by key fingerprint
-            for key_fp in &role.peer_keys {
-                self.peer_policies_by_fingerprint
-                    .entry(key_fp.clone())
-                    .and_modify(|existing| {
-                        existing.rules.extend(policy.rules.clone());
-                        existing.role_names.push(role.name.clone());
-                    })
-                    .or_insert_with(|| policy.clone());
+            // Index by the full public key (H7). Each entry is normalized to
+            // the 64-char hex of the complete 32-byte key; truncated
+            // fingerprints are rejected so they cannot be brute-forced into a
+            // privileged role.
+            for key_entry in &role.peer_keys {
+                match normalize_peer_key(key_entry) {
+                    Some(key_hex) => {
+                        self.peer_policies_by_key
+                            .entry(key_hex)
+                            .and_modify(|existing| {
+                                existing.rules.extend(policy.rules.clone());
+                                existing.role_names.push(role.name.clone());
+                            })
+                            .or_insert_with(|| policy.clone());
+                    }
+                    None => {
+                        tracing::warn!(
+                            "Policy role '{}': ignoring peer_keys entry '{}' — must be a full \
+                             32-byte public key (base64 or 64-char hex), not a truncated \
+                             fingerprint (security audit H7)",
+                            role.name,
+                            key_entry
+                        );
+                    }
+                }
             }
 
             tracing::info!(
@@ -649,6 +701,80 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn normalize_peer_key_requires_full_key() {
+        let full = [0xABu8; 32];
+        let hex64 = hex::encode(full);
+        assert_eq!(normalize_peer_key(&base64::encode(full)), Some(hex64.clone()));
+        assert_eq!(normalize_peer_key(&hex64), Some(hex64));
+        // Truncated fingerprints and short keys are rejected (H7).
+        assert_eq!(normalize_peer_key("aabbccdd"), None); // 4 bytes
+        assert_eq!(normalize_peer_key(&hex::encode([0u8; 16])), None); // 16 bytes
+        assert_eq!(normalize_peer_key(""), None);
+    }
+
+    #[test]
+    fn policy_binds_to_full_key_not_fingerprint() {
+        let priv_key = [0x11u8; 32];
+        let config = PolicyConfig {
+            enabled: true,
+            default_action: "deny".to_string(),
+            policy_path: None,
+            role: vec![RoleConfig {
+                name: "admin".to_string(),
+                peers: vec![],
+                peer_keys: vec![base64::encode(priv_key)],
+                rule: vec![RuleConfig {
+                    action: "allow".to_string(),
+                    network: "0.0.0.0/0".to_string(),
+                    ports: None,
+                    protocol: "any".to_string(),
+                    description: None,
+                }],
+            }],
+        };
+        let mut engine = PolicyEngine::new(&config);
+        let dst = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+
+        // Exact full key → allowed.
+        let (action, _) = engine.evaluate(&priv_key, None, dst, Some(443), Some(6));
+        assert!(matches!(action, PolicyAction::Allow));
+
+        // Same first 4 bytes but differing tail → must NOT match (the exact
+        // brute-force collision the old 4-byte fingerprint match permitted).
+        let mut collision = priv_key;
+        collision[31] ^= 0xFF;
+        let (action, _) = engine.evaluate(&collision, None, dst, Some(443), Some(6));
+        assert!(matches!(action, PolicyAction::Deny));
+    }
+
+    #[test]
+    fn policy_rejects_truncated_fingerprint_entries() {
+        // An old-style 8-hex fingerprint entry must be ignored, not matched.
+        let config = PolicyConfig {
+            enabled: true,
+            default_action: "deny".to_string(),
+            policy_path: None,
+            role: vec![RoleConfig {
+                name: "admin".to_string(),
+                peers: vec![],
+                peer_keys: vec!["11111111".to_string()],
+                rule: vec![RuleConfig {
+                    action: "allow".to_string(),
+                    network: "0.0.0.0/0".to_string(),
+                    ports: None,
+                    protocol: "any".to_string(),
+                    description: None,
+                }],
+            }],
+        };
+        let mut engine = PolicyEngine::new(&config);
+        let key = [0x11u8; 32];
+        let dst = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+        let (action, _) = engine.evaluate(&key, None, dst, Some(443), Some(6));
+        assert!(matches!(action, PolicyAction::Deny));
     }
 
     #[test]

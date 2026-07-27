@@ -227,6 +227,12 @@ enum Commands {
         /// Output directory for client config
         #[arg(short, long, default_value = ".")]
         output: PathBuf,
+
+        /// Allow enrolling over plaintext HTTP. Without this, a non-HTTPS
+        /// server URL is refused because the token and issued config would
+        /// travel in the clear (security audit H6).
+        #[arg(long)]
+        insecure: bool,
     },
 
     /// Revoke a peer's key (add to CRL, optionally disconnect immediately)
@@ -366,7 +372,8 @@ fn main() -> Result<()> {
             name,
             mode,
             output,
-        } => cmd_enroll(&server, &token, &name, &mode, &output),
+            insecure,
+        } => cmd_enroll(&server, &token, &name, &mode, &output, insecure),
         Commands::RevokeKey {
             config,
             peer,
@@ -656,7 +663,7 @@ fn cmd_add_peer(
 
     // Write client config
     let client_config_path = output_dir.join(format!("{}.toml", client_name));
-    fs::write(&client_config_path, &client_config).with_context(|| {
+    write_secret_file(&client_config_path, client_config.as_bytes()).with_context(|| {
         format!(
             "Failed to write client config: {}",
             client_config_path.display()
@@ -762,6 +769,40 @@ fn write_pid_file(path: &Path, pid: u32) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Write `contents` to `path`, restricting the file to owner-only (0600) on
+/// Unix. Use for any file that contains private keys, so secrets are never left
+/// world-readable (security audit H3). On Unix the mode is applied at creation
+/// (avoiding a brief world-readable window) and re-applied afterwards in case
+/// the file already existed with looser permissions.
+fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(contents)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)
+    }
+}
+
+/// SHA-256 fingerprint of a secret, so it can be identified in logs without
+/// revealing the secret itself (security audit H5).
+fn token_fingerprint(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(token.as_bytes());
+    hex::encode(&digest[..8])
 }
 
 /// Remove PID file
@@ -1096,15 +1137,20 @@ fn cmd_up(config_path: &PathBuf, foreground: bool) -> Result<()> {
 
     // Start enrollment API if enabled
     if config.enrollment.enabled {
-        let enrollment_token = config.enrollment.token.clone().unwrap_or_else(|| {
-            tracing::warn!("Enrollment API enabled but no token set — generating random token");
-            let mut buf = [0u8; 32];
-            use std::io::Read;
-            if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-                let _ = f.read_exact(&mut buf);
+        // Use the configured token, or generate a strong one. Generation uses
+        // the vetted CSPRNG and fails hard on RNG error rather than falling
+        // back to a weak/all-zero token (security audit H4).
+        let (enrollment_token, generated) = match config.enrollment.token.clone() {
+            Some(t) => (t, false),
+            None => {
+                let backend = select_backend();
+                let mut buf = [0u8; 32];
+                backend.random_bytes(&mut buf).map_err(|e| {
+                    anyhow::anyhow!("Failed to generate enrollment token: {}", e)
+                })?;
+                (hex::encode(buf), true)
             }
-            hex::encode(&buf[..16])
-        });
+        };
 
         let enrollment_listen: SocketAddr = config
             .enrollment
@@ -1138,7 +1184,42 @@ fn cmd_up(config_path: &PathBuf, foreground: bool) -> Result<()> {
         });
 
         tracing::info!("Enrollment API started on {}", enrollment_listen);
-        tracing::info!("Enrollment token: {}", enrollment_token);
+
+        // Never log the token in cleartext (security audit H5). A generated
+        // token is delivered out-of-band via a 0600 sidecar file; only its
+        // location and a SHA-256 fingerprint are logged.
+        if generated {
+            let token_path = config_path.with_extension("enroll-token");
+            match write_secret_file(&token_path, enrollment_token.as_bytes()) {
+                Ok(()) => tracing::warn!(
+                    "Enrollment API had no token configured; a random one was generated and \
+                     written to {} (SHA-256 {}). Distribute it to clients out-of-band.",
+                    token_path.display(),
+                    token_fingerprint(&enrollment_token),
+                ),
+                Err(e) => {
+                    anyhow::bail!(
+                        "Failed to write generated enrollment token to {}: {}",
+                        token_path.display(),
+                        e
+                    );
+                }
+            }
+        } else {
+            tracing::info!(
+                "Enrollment API using configured token (SHA-256 {})",
+                token_fingerprint(&enrollment_token),
+            );
+        }
+
+        if !enrollment_listen.ip().is_loopback() {
+            tracing::warn!(
+                "Enrollment API is bound to {} over plaintext HTTP — the token and issued \
+                 configs are sent in the clear. Run it behind a TLS-terminating reverse proxy \
+                 or restrict it to a trusted network (security audit H6).",
+                enrollment_listen
+            );
+        }
     }
 
     // Run the event loop
@@ -1704,7 +1785,7 @@ persistent_keepalive = 25
         )
     };
 
-    std::fs::write(&config_path, &config)?;
+    write_secret_file(&config_path, config.as_bytes())?;
 
     println!("Created: {}", config_path.display());
     println!();
@@ -1936,7 +2017,8 @@ fn cmd_remove_peer(config_path: &Path, peer_identifier: &str, skip_confirm: bool
 
     let new_config = new_lines.join("\n") + "\n";
 
-    fs::write(config_path, &new_config)
+    // The server config holds the server's private key → owner-only (H3).
+    write_secret_file(config_path, new_config.as_bytes())
         .with_context(|| format!("Failed to write config: {}", config_path.display()))?;
 
     let remaining = peer_blocks.len() - 1;
@@ -2128,7 +2210,33 @@ fn cmd_reload(interface: &str) -> Result<()> {
 }
 
 /// Enroll with a DyberVPN server's enrollment API
-fn cmd_enroll(server_url: &str, token: &str, name: &str, mode: &str, output: &Path) -> Result<()> {
+fn cmd_enroll(
+    server_url: &str,
+    token: &str,
+    name: &str,
+    mode: &str,
+    output: &Path,
+    insecure: bool,
+) -> Result<()> {
+    // H6: refuse plaintext transport unless explicitly opted in. The token and
+    // the issued client config (including its private key) would otherwise
+    // cross the network in the clear.
+    if !server_url.starts_with("https://") {
+        if insecure {
+            eprintln!(
+                "\x1b[1;33m⚠  Enrolling over plaintext HTTP — the token and issued config are \
+                 sent unencrypted. Use only on a trusted network.\x1b[0m"
+            );
+        } else {
+            anyhow::bail!(
+                "Refusing to enroll over plaintext HTTP ({}). Use an https:// URL (e.g. behind a \
+                 TLS-terminating proxy), or pass --insecure to allow cleartext on a trusted \
+                 network.",
+                server_url
+            );
+        }
+    }
+
     let mode: OperatingMode = mode.parse().context("Invalid mode")?;
     let backend = select_backend();
 
@@ -2245,9 +2353,9 @@ fn cmd_enroll(server_url: &str, token: &str, name: &str, mode: &str, output: &Pa
             },
         );
 
-    // Write config
+    // Write config (contains the client's private key → owner-only, H3)
     let config_path = output.join(format!("{}.toml", name));
-    fs::write(&config_path, &final_config)
+    write_secret_file(&config_path, final_config.as_bytes())
         .with_context(|| format!("Failed to write config: {}", config_path.display()))?;
 
     println!("\x1b[1;32m\u{2713} Enrolled successfully!\x1b[0m");
@@ -3421,4 +3529,41 @@ fn cmd_broker(config_path: &PathBuf) -> Result<()> {
 
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{token_fingerprint, write_secret_file};
+
+    #[test]
+    fn token_fingerprint_is_stable_and_hides_secret() {
+        let fp = token_fingerprint("super-secret-token");
+        assert_eq!(fp.len(), 16, "8-byte SHA-256 prefix as hex");
+        assert_eq!(fp, token_fingerprint("super-secret-token"));
+        assert_ne!(fp, token_fingerprint("different-token"));
+        assert!(!fp.contains("secret"));
+    }
+
+    #[test]
+    fn write_secret_file_writes_contents_and_restricts_perms() {
+        let dir = std::env::temp_dir().join(format!("dybervpn-cli-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secret.toml");
+
+        write_secret_file(&path, b"private_key = \"x\"\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "private_key = \"x\"\n"
+        );
+
+        // H3: the file must be owner-only on Unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "secret file must be 0600");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
