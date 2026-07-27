@@ -66,6 +66,17 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli@^2
 
+      # Build the DyberVPN CLI and stage it as the Tauri externalBin sidecar
+      # for this platform (the desktop app shells out to it).
+      - name: Build CLI sidecar
+        shell: bash
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          ext=""; case "$triple" in *windows*) ext=".exe";; esac
+          cargo build --release -p dybervpn-cli
+          mkdir -p desktop/src-tauri/binaries
+          cp "target/release/dybervpn${ext}" "desktop/src-tauri/binaries/dybervpn-${triple}${ext}"
+
       - name: Build Tauri app
         working-directory: desktop
         run: cargo tauri build --bundles ${{ matrix.bundles }}

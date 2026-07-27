@@ -91,6 +91,17 @@ jobs:
         working-directory: desktop
         run: npx vite build
 
+      # The CLI is bundled as a Tauri externalBin sidecar. For a `cargo check`
+      # a placeholder file at the expected per-target path is enough to satisfy
+      # Tauri's resource-existence check.
+      - name: Create sidecar placeholder
+        shell: bash
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          ext=""; case "$triple" in *windows*) ext=".exe";; esac
+          mkdir -p desktop/src-tauri/binaries
+          touch "desktop/src-tauri/binaries/dybervpn-${triple}${ext}"
+
       - name: Check Tauri build
         working-directory: desktop/src-tauri
         run: cargo check
@@ -130,6 +141,14 @@ jobs:
       - name: Check formatting
         working-directory: desktop/src-tauri
         run: cargo fmt -- --check
+
+      # Placeholder sidecar so Tauri's externalBin existence check passes.
+      - name: Create sidecar placeholder
+        shell: bash
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p desktop/src-tauri/binaries
+          touch "desktop/src-tauri/binaries/dybervpn-${triple}"
 
       - name: Run Clippy
         working-directory: desktop/src-tauri
