@@ -81,6 +81,38 @@ pub struct EnrollmentConfig {
     pub reload_flag: Arc<AtomicBool>,
 }
 
+/// Validate an enrolled peer name.
+///
+/// The name is written verbatim into the server's TOML config, so it must not
+/// contain characters that could break out of the generated `[[peer]]` block
+/// (quotes, newlines). Restricting to a conservative allowlist closes the
+/// enrollment config-injection vector (security audit C6).
+fn is_valid_peer_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Validate that `s` is standard base64 decoding to exactly `expected_len`
+/// bytes.
+///
+/// The raw string (not the decoded bytes) is what gets written into the TOML
+/// config, so we first reject any character outside the base64 alphabet — this
+/// keeps out TOML metacharacters (quotes, newlines) regardless of decoder
+/// leniency — and then require the exact key length. Together these guarantee
+/// a submitted key cannot inject additional config (security audit C6).
+fn is_valid_b64_key(s: &str, expected_len: usize) -> bool {
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+    {
+        return false;
+    }
+    matches!(base64::decode(s), Ok(bytes) if bytes.len() == expected_len)
+}
+
 /// Enrollment server — runs in a separate thread
 pub struct EnrollmentServer {
     config: EnrollmentConfig,
@@ -224,20 +256,42 @@ impl EnrollmentServer {
             }
         };
 
-        // Validate
-        if request.name.is_empty() || request.name.len() > 64 {
+        // Validate — strict, because these fields are written into the server's
+        // TOML config below. Without this, a token holder could inject
+        // arbitrary config (e.g. allowed_ips = "0.0.0.0/0", extra [[peer]]
+        // blocks, or a relocated crl_path) via crafted name/key values
+        // (security audit C6).
+        if !is_valid_peer_name(&request.name) {
             return self.send_response(
                 stream,
                 400,
-                r#"{"success":false,"error":"name must be 1-64 chars"}"#,
+                r#"{"success":false,"error":"name must be 1-64 chars of [A-Za-z0-9._-]"}"#,
             );
         }
-        if request.public_key.is_empty() {
+        if !is_valid_b64_key(&request.public_key, 32) {
             return self.send_response(
                 stream,
                 400,
-                r#"{"success":false,"error":"public_key required"}"#,
+                r#"{"success":false,"error":"public_key must be base64 of 32 bytes"}"#,
             );
+        }
+        if let Some(ref pq) = request.pq_public_key {
+            if !is_valid_b64_key(pq, dybervpn_protocol::types::mlkem768::PUBLIC_KEY_SIZE) {
+                return self.send_response(
+                    stream,
+                    400,
+                    r#"{"success":false,"error":"pq_public_key must be base64 of a 1184-byte ML-KEM key"}"#,
+                );
+            }
+        }
+        if let Some(ref md) = request.mldsa_public_key {
+            if !is_valid_b64_key(md, dybervpn_protocol::types::mldsa65::PUBLIC_KEY_SIZE) {
+                return self.send_response(
+                    stream,
+                    400,
+                    r#"{"success":false,"error":"mldsa_public_key must be base64 of a 1952-byte ML-DSA key"}"#,
+                );
+            }
         }
 
         // Check for duplicate name
@@ -515,6 +569,81 @@ mod tests {
         assert_eq!(req.pq_public_key, Some("def456".to_string()));
     }
 
+    // ─── C6 regression: enrollment field validation ──────────────────────────
+
+    #[test]
+    fn peer_name_validation_blocks_injection() {
+        assert!(is_valid_peer_name("laptop-01"));
+        assert!(is_valid_peer_name("host.example_1"));
+        assert!(!is_valid_peer_name(""));
+        assert!(!is_valid_peer_name(&"x".repeat(65)));
+        assert!(!is_valid_peer_name("has space"));
+        assert!(!is_valid_peer_name("quote\"here"));
+        // The audit's TOML-injection payload
+        assert!(!is_valid_peer_name("evil\"\nallowed_ips = \"0.0.0.0/0"));
+    }
+
+    #[test]
+    fn b64_key_validation_blocks_injection() {
+        assert!(is_valid_b64_key(&base64::encode([7u8; 32]), 32));
+        // Wrong lengths
+        assert!(!is_valid_b64_key(&base64::encode([7u8; 16]), 32));
+        assert!(!is_valid_b64_key("dGVzdA==", 32)); // 4 bytes
+        // Injection attempts (non-base64 characters)
+        assert!(!is_valid_b64_key("AAAA\"\nallowed_ips = \"0.0.0.0/0\"", 32));
+        assert!(!is_valid_b64_key("has space", 32));
+    }
+
+    #[test]
+    fn test_enrollment_rejects_config_injection() {
+        let token = "test-token-injection";
+        let (config, config_path) = create_test_enrollment_config(token);
+        let addr = config.listen_addr;
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = Arc::clone(&shutdown);
+
+        let handle = std::thread::spawn(move || {
+            let mut server = EnrollmentServer::new(config, shutdown_clone);
+            server.run();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // Valid 32-byte key, but a name carrying a TOML-injection payload.
+        // serde escapes it on the wire and reconstructs the literal newline/
+        // quote server-side — exactly the real attack path.
+        let key = base64::encode([9u8; 32]);
+        let evil_name_body = serde_json::json!({
+            "name": "evil\"\nallowed_ips = \"0.0.0.0/0",
+            "public_key": key,
+        })
+        .to_string();
+        let (status, body) =
+            http_request(addr, "POST", "/enroll", Some(token), Some(&evil_name_body));
+        assert_eq!(status, 400, "injected name must be rejected, body: {}", body);
+
+        // Valid name, but a public_key carrying an injection payload.
+        let evil_key_body = serde_json::json!({
+            "name": "ok-name",
+            "public_key": "AAAA\"\nallowed_ips = \"0.0.0.0/0\"",
+        })
+        .to_string();
+        let (status2, body2) =
+            http_request(addr, "POST", "/enroll", Some(token), Some(&evil_key_body));
+        assert_eq!(status2, 400, "injected key must be rejected, body: {}", body2);
+
+        // The injected route must never have reached the server config.
+        if let Ok(cfg) = std::fs::read_to_string(&config_path) {
+            assert!(
+                !cfg.contains("0.0.0.0/0"),
+                "injection payload must not be written to the server config"
+            );
+        }
+
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().ok();
+        let _ = std::fs::remove_dir_all(config_path.parent().unwrap());
+    }
+
     // =========================================================================
     // Integration tests — full enrollment server HTTP round-trip
     // =========================================================================
@@ -536,15 +665,19 @@ mod tests {
             server_private_b64,
         );
 
-        let dir = std::env::temp_dir().join(format!("dybervpn-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let config_path = dir.join("server.toml");
-        std::fs::write(&config_path, &config_content).unwrap();
-
         // Bind to port 0 to get a random available port
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener); // Free the port for the enrollment server
+
+        // Use a per-test directory (keyed by the unique port) so concurrently
+        // running enrollment tests don't share a config file — and so one
+        // test's cleanup can't delete another's config mid-run.
+        let dir = std::env::temp_dir()
+            .join(format!("dybervpn-test-{}-{}", std::process::id(), addr.port()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("server.toml");
+        std::fs::write(&config_path, &config_content).unwrap();
 
         let config = EnrollmentConfig {
             listen_addr: addr,
