@@ -262,6 +262,16 @@ impl RevocationEngine {
         // Check CRL — try short and long fingerprints
         for fp in &[&fingerprint, &fingerprint_long] {
             if let Some(entry) = self.revoked.get(*fp) {
+                // M3: when the full key is recorded, require an exact match so
+                // two distinct keys sharing a short fingerprint prefix aren't
+                // conflated (a collision could falsely revoke a legitimate key,
+                // or be ground out deliberately to lock a target out).
+                if let Some(ref full) = entry.public_key_full {
+                    if full != &base64::encode(peer_key) {
+                        continue;
+                    }
+                }
+
                 // Check if suspension has expired
                 if entry.reason == RevocationReason::Suspended {
                     if let Some(ref expires) = entry.expires_at {
@@ -540,6 +550,26 @@ mod tests {
             KeyStatus::Revoked(reason) => assert!(reason.contains("employee_departed")),
             other => panic!("Expected Revoked, got {:?}", other),
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn revocation_requires_full_key_match() {
+        // M3: revoking one key must not revoke a different key that shares the
+        // same short fingerprint prefix.
+        let (mut engine, dir) = test_engine("collision");
+        let victim = [0xABu8; 32];
+        engine
+            .revoke_key(&victim, Some("real"), RevocationReason::KeyCompromised, None)
+            .unwrap();
+        assert!(engine.is_revoked(&victim));
+
+        let mut collision = victim;
+        collision[31] ^= 0xFF; // same prefix, different key
+        assert!(
+            !engine.is_revoked(&collision),
+            "a key sharing only the fingerprint prefix must not be revoked"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -81,6 +81,21 @@ pub struct EnrollmentConfig {
     pub reload_flag: Arc<AtomicBool>,
 }
 
+/// Constant-time string equality, used for the enrollment bearer-token check
+/// so an attacker cannot recover the token byte-by-byte via a timing side
+/// channel (security audit M2). The length is allowed to leak (standard).
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// Validate an enrolled peer name.
 ///
 /// The name is written verbatim into the server's TOML config, so it must not
@@ -227,7 +242,7 @@ impl EnrollmentServer {
         // Check authorization token
         let auth = headers.get("authorization").cloned().unwrap_or_default();
         let expected = format!("Bearer {}", self.config.token);
-        if auth != expected {
+        if !constant_time_eq(&auth, &expected) {
             tracing::warn!("Enrollment auth failed from {}", addr);
             return self.send_response(stream, 401, r#"{"success":false,"error":"unauthorized"}"#);
         }
@@ -482,7 +497,7 @@ impl EnrollmentServer {
         // Require auth
         let auth = headers.get("authorization").cloned().unwrap_or_default();
         let expected = format!("Bearer {}", self.config.token);
-        if auth != expected {
+        if !constant_time_eq(&auth, &expected) {
             return self.send_response(stream, 401, r#"{"error":"unauthorized"}"#);
         }
 
@@ -570,6 +585,14 @@ mod tests {
     }
 
     // ─── C6 regression: enrollment field validation ──────────────────────────
+
+    #[test]
+    fn constant_time_eq_semantics() {
+        assert!(constant_time_eq("token-abc", "token-abc"));
+        assert!(!constant_time_eq("token-abc", "token-abd"));
+        assert!(!constant_time_eq("token-abc", "token-ab"));
+        assert!(constant_time_eq("", ""));
+    }
 
     #[test]
     fn peer_name_validation_blocks_injection() {

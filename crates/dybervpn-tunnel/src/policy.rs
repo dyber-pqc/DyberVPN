@@ -346,12 +346,17 @@ impl PolicyEngine {
 
             // Check port match
             if let Some(ref port_ranges) = rule.ports {
-                if let Some(port) = dst_port {
-                    if !port_ranges.iter().any(|r| r.contains(port)) {
-                        continue;
+                match dst_port {
+                    Some(port) => {
+                        if !port_ranges.iter().any(|r| r.contains(port)) {
+                            continue;
+                        }
                     }
+                    // M7: a port-restricted rule must not match when the port is
+                    // unknown (truncated L4, manipulated IHL, or a non-first
+                    // fragment) — otherwise it silently becomes allow-any.
+                    None => continue,
                 }
-                // If packet port is unknown (e.g., ICMP), skip port check
             }
 
             // Match!
@@ -406,12 +411,37 @@ impl PolicyEngine {
     /// Compile role configs into per-peer lookup tables
     fn compile_roles(&mut self, roles: &[RoleConfig]) {
         for role in roles {
-            let compiled_rules: Vec<CompiledRule> = role
-                .rule
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, r)| self.compile_rule(r, &role.name, idx))
-                .collect();
+            let mut compiled_rules: Vec<CompiledRule> = Vec::with_capacity(role.rule.len());
+            let mut had_error = false;
+            for (idx, r) in role.rule.iter().enumerate() {
+                match self.compile_rule(r, &role.name, idx) {
+                    Some(cr) => compiled_rules.push(cr),
+                    None => {
+                        had_error = true;
+                        tracing::error!(
+                            "Policy role '{}': rule {} is malformed (network '{}') — the role \
+                             will DENY all traffic until fixed (fail-closed, security audit M8)",
+                            role.name,
+                            idx,
+                            r.network
+                        );
+                    }
+                }
+            }
+
+            // M8: a rule that fails to compile must not simply disappear — a
+            // dropped `deny` rule would expose the subnet it was meant to
+            // protect. Fail closed: replace the role's rules with deny-all.
+            if had_error {
+                compiled_rules = vec![CompiledRule {
+                    action: PolicyAction::Deny,
+                    network: IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                    prefix: 0,
+                    ports: None,
+                    protocol: None,
+                    rule_name: format!("{}:fail-closed", role.name),
+                }];
+            }
 
             let policy = PeerPolicy {
                 rules: compiled_rules,
@@ -547,6 +577,12 @@ pub fn inspect_packet(packet: &[u8]) -> Option<(IpAddr, IpAddr, Option<u16>, u8)
 
     match version {
         4 if packet.len() >= 20 => {
+            let ihl = (packet[0] & 0x0F) as usize * 4;
+            // M7: reject malformed header lengths — IHL must be 20..=len, or
+            // the L4 port would be read from the wrong offset.
+            if ihl < 20 || ihl > packet.len() {
+                return None;
+            }
             let protocol = packet[9];
             let src = IpAddr::V4(std::net::Ipv4Addr::new(
                 packet[12], packet[13], packet[14], packet[15],
@@ -554,8 +590,15 @@ pub fn inspect_packet(packet: &[u8]) -> Option<(IpAddr, IpAddr, Option<u16>, u8)
             let dst = IpAddr::V4(std::net::Ipv4Addr::new(
                 packet[16], packet[17], packet[18], packet[19],
             ));
-            let ihl = (packet[0] & 0x0F) as usize * 4;
-            let dst_port = extract_dst_port(packet, ihl, protocol);
+            // M7: only the first fragment (fragment offset == 0) carries the L4
+            // header. For later fragments the port is unknown, so it is left as
+            // None and port-restricted rules will not match (fail closed).
+            let frag_off = u16::from_be_bytes([packet[6], packet[7]]) & 0x1FFF;
+            let dst_port = if frag_off == 0 {
+                extract_dst_port(packet, ihl, protocol)
+            } else {
+                None
+            };
             Some((src, dst, dst_port, protocol))
         }
         6 if packet.len() >= 40 => {
@@ -595,12 +638,15 @@ fn extract_dst_port(packet: &[u8], l4_offset: usize, protocol: u8) -> Option<u16
 
 fn parse_cidr(s: &str) -> Option<(IpAddr, u8)> {
     let s = s.trim();
-    let parts: Vec<&str> = s.split('/').collect();
-    if parts.len() != 2 {
+    let (ip_str, prefix_str) = s.split_once('/')?;
+    let ip: IpAddr = ip_str.parse().ok()?;
+    let prefix: u8 = prefix_str.parse().ok()?;
+    // M6: reject prefixes wider than the address, which would otherwise cause
+    // a shift overflow (debug panic / wrong mask in release) during matching.
+    let max = if ip.is_ipv4() { 32 } else { 128 };
+    if prefix > max {
         return None;
     }
-    let ip: IpAddr = parts[0].parse().ok()?;
-    let prefix: u8 = parts[1].parse().ok()?;
     Some((ip, prefix))
 }
 
@@ -628,6 +674,9 @@ fn ip_in_network(ip: IpAddr, network: IpAddr, prefix: u8) -> bool {
             if prefix == 0 {
                 return true;
             }
+            if prefix > 32 {
+                return false; // M6: avoid shift overflow on a malformed prefix
+            }
             let ip_bits = u32::from_be_bytes(ip.octets());
             let net_bits = u32::from_be_bytes(net.octets());
             let mask = !0u32 << (32 - prefix);
@@ -636,6 +685,9 @@ fn ip_in_network(ip: IpAddr, network: IpAddr, prefix: u8) -> bool {
         (IpAddr::V6(ip), IpAddr::V6(net)) => {
             if prefix == 0 {
                 return true;
+            }
+            if prefix > 128 {
+                return false; // M6: avoid shift overflow on a malformed prefix
             }
             let ip_bits = u128::from_be_bytes(ip.octets());
             let net_bits = u128::from_be_bytes(net.octets());
@@ -775,6 +827,101 @@ mod tests {
         let dst = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
         let (action, _) = engine.evaluate(&key, None, dst, Some(443), Some(6));
         assert!(matches!(action, PolicyAction::Deny));
+    }
+
+    #[test]
+    fn parse_cidr_rejects_oversized_prefix() {
+        assert!(parse_cidr("10.0.0.0/33").is_none()); // M6
+        assert!(parse_cidr("::/129").is_none());
+        assert!(parse_cidr("10.0.0.0/24").is_some());
+    }
+
+    #[test]
+    fn inspect_packet_rejects_bad_ihl_and_fragments() {
+        // Minimal IPv4/TCP packet: IHL=5, dst port 443.
+        let mut pkt = vec![0u8; 24];
+        pkt[0] = 0x45;
+        pkt[9] = 6; // TCP
+        pkt[12..16].copy_from_slice(&[10, 0, 0, 2]);
+        pkt[16..20].copy_from_slice(&[10, 0, 0, 1]);
+        pkt[22] = 0x01;
+        pkt[23] = 0xBB; // dst port 443
+        let (_, _, port, proto) = inspect_packet(&pkt).unwrap();
+        assert_eq!(proto, 6);
+        assert_eq!(port, Some(443));
+
+        // M7: a malformed IHL (< 5) is rejected entirely.
+        let mut bad = pkt.clone();
+        bad[0] = 0x40;
+        assert!(inspect_packet(&bad).is_none());
+
+        // M7: a non-first fragment (fragment offset != 0) has no L4 header, so
+        // the port must be reported as unknown.
+        let mut frag = pkt.clone();
+        frag[7] = 0x10; // fragment offset = 16
+        let (_, _, port, _) = inspect_packet(&frag).unwrap();
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn port_restricted_rule_denies_unknown_port() {
+        let config = PolicyConfig {
+            enabled: true,
+            default_action: "deny".to_string(),
+            policy_path: None,
+            role: vec![RoleConfig {
+                name: "r".to_string(),
+                peers: vec!["alice".to_string()],
+                peer_keys: vec![],
+                rule: vec![RuleConfig {
+                    action: "allow".to_string(),
+                    network: "10.0.0.0/8".to_string(),
+                    ports: Some("443".to_string()),
+                    protocol: "tcp".to_string(),
+                    description: None,
+                }],
+            }],
+        };
+        let mut engine = PolicyEngine::new(&config);
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3));
+        assert!(matches!(
+            engine.evaluate(&[1u8; 32], Some("alice"), dst, Some(443), Some(6)).0,
+            PolicyAction::Allow
+        ));
+        // M7: unknown port must not match the port-restricted allow rule.
+        assert!(matches!(
+            engine.evaluate(&[1u8; 32], Some("alice"), dst, None, Some(6)).0,
+            PolicyAction::Deny
+        ));
+    }
+
+    #[test]
+    fn malformed_rule_fails_closed() {
+        let config = PolicyConfig {
+            enabled: true,
+            default_action: "allow".to_string(), // permissive default
+            policy_path: None,
+            role: vec![RoleConfig {
+                name: "r".to_string(),
+                peers: vec!["alice".to_string()],
+                peer_keys: vec![],
+                rule: vec![RuleConfig {
+                    action: "deny".to_string(),
+                    network: "not-a-cidr".to_string(), // malformed
+                    ports: None,
+                    protocol: "any".to_string(),
+                    description: None,
+                }],
+            }],
+        };
+        let mut engine = PolicyEngine::new(&config);
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        // M8: the malformed rule turns the whole role deny-all, so alice is
+        // denied despite the permissive default.
+        assert!(matches!(
+            engine.evaluate(&[1u8; 32], Some("alice"), dst, Some(80), Some(6)).0,
+            PolicyAction::Deny
+        ));
     }
 
     #[test]

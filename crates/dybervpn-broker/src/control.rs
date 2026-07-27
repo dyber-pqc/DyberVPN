@@ -15,9 +15,20 @@ use dybervpn_tunnel::connector::ControlMessage;
 use dybervpn_tunnel::revocation::RevocationEngine;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use x25519_dalek::{PublicKey, StaticSecret};
+
+/// Maximum length of a single control-plane NDJSON line. Registration is a few
+/// KB; larger lines are rejected to bound per-connection memory (audit M9).
+const MAX_CONTROL_LINE_BYTES: usize = 64 * 1024;
+/// Maximum routes a single connector may advertise (bounds registry growth and
+/// the per-packet longest-prefix scan).
+const MAX_ADVERTISED_ROUTES: usize = 256;
+/// Idle read timeout for a control connection — a connection that sends nothing
+/// within this window is closed (mitigates slow-loris accumulation).
+const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Run the control plane TCP server
 ///
@@ -77,7 +88,28 @@ async fn handle_connector(
 
     let mut connector_key: Option<[u8; 32]> = None;
 
-    while let Some(line) = lines.next_line().await.map_err(BrokerError::Io)? {
+    loop {
+        // M9: bound how long we wait for a line, and reject oversized lines,
+        // so a single connection cannot tie up the broker or exhaust memory.
+        let line = match tokio::time::timeout(CONTROL_READ_TIMEOUT, lines.next_line()).await {
+            Ok(Ok(Some(line))) => line,
+            Ok(Ok(None)) => break, // clean EOF
+            Ok(Err(e)) => return Err(BrokerError::Io(e)),
+            Err(_) => {
+                tracing::debug!("Control connection {} idle-timed out", addr);
+                break;
+            }
+        };
+
+        if line.len() > MAX_CONTROL_LINE_BYTES {
+            tracing::warn!(
+                "Control connection {} sent an oversized line ({} bytes) — closing",
+                addr,
+                line.len()
+            );
+            break;
+        }
+
         let msg: ControlMessage = serde_json::from_str(&line)
             .map_err(|e| BrokerError::Protocol(format!("invalid JSON: {}", e)))?;
 
@@ -104,6 +136,13 @@ async fn handle_connector(
                 if revocation.is_revoked(&pk) {
                     tracing::warn!("Connector {} has revoked key", hex::encode(&pk[..4]));
                     send_register_ack(&mut writer, false, "key revoked").await?;
+                    continue;
+                }
+
+                // M9: bound the number of advertised routes to protect the
+                // registry (and the per-packet longest-prefix-match scan).
+                if advertised_routes.len() > MAX_ADVERTISED_ROUTES {
+                    send_register_ack(&mut writer, false, "too many advertised routes").await?;
                     continue;
                 }
 
@@ -225,6 +264,13 @@ async fn handle_connector(
 
                 if routes.is_empty() {
                     send_register_ack(&mut writer, false, "no authorized routes").await?;
+                    continue;
+                }
+
+                // M9: enforce capacity before creating a Tunn/peer, so the
+                // control plane can't grow the peer map without bound.
+                if !peers.contains_key(&pk) && peers.len() >= config.max_clients {
+                    send_register_ack(&mut writer, false, "broker at capacity").await?;
                     continue;
                 }
 

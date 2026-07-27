@@ -1652,6 +1652,9 @@ impl Daemon {
     fn ip_in_network(ip: IpAddr, network: IpAddr, prefix: u8) -> bool {
         match (ip, network) {
             (IpAddr::V4(ip), IpAddr::V4(net)) => {
+                if prefix > 32 {
+                    return false; // M6: avoid shift overflow on a malformed prefix
+                }
                 let mask = if prefix == 0 {
                     0
                 } else {
@@ -1661,6 +1664,9 @@ impl Daemon {
                     == (u32::from_be_bytes(net.octets()) & mask)
             }
             (IpAddr::V6(ip), IpAddr::V6(net)) => {
+                if prefix > 128 {
+                    return false; // M6: avoid shift overflow on a malformed prefix
+                }
                 let mask = if prefix == 0 {
                     0
                 } else {

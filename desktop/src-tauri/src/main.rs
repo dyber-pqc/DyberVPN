@@ -185,6 +185,62 @@ fn valid_interface_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// Reject a webview-supplied file path whose extension is not allowed, so the
+/// file-reading commands can't be abused (e.g. by a compromised renderer) to
+/// read arbitrary files such as SSH keys (security audit M1).
+fn validate_readable_path(path: &str, allowed_exts: &[&str]) -> Result<(), String> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if allowed_exts.iter().any(|a| a.eq_ignore_ascii_case(ext)) {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing to read '{}': only {} files are permitted",
+            path,
+            allowed_exts.join(", ")
+        ))
+    }
+}
+
+/// Validate a `host:port` target for the health/metrics commands. Blocks the
+/// link-local / cloud-metadata range (169.254.0.0/16, fe80::/10) to blunt SSRF
+/// from the webview, and — when `loopback_only` — requires a loopback host so
+/// the metrics command can only read the local daemon (security audit M12).
+fn validate_network_target(host_port: &str, loopback_only: bool) -> Result<(), String> {
+    let host = host_port
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(host_port)
+        .trim_matches(|c| c == '[' || c == ']');
+
+    let parsed = host.parse::<std::net::IpAddr>().ok();
+    let is_loopback = host.eq_ignore_ascii_case("localhost")
+        || parsed.map(|ip| ip.is_loopback()).unwrap_or(false);
+
+    if loopback_only && !is_loopback {
+        return Err(format!(
+            "metrics may only be read from localhost, not '{}'",
+            host
+        ));
+    }
+
+    if let Some(ip) = parsed {
+        let link_local = match ip {
+            std::net::IpAddr::V4(v4) => v4.is_link_local(),
+            std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+        };
+        if link_local {
+            return Err(format!(
+                "refusing to connect to link-local address '{}'",
+                host
+            ));
+        }
+    }
+    Ok(())
+}
+
 // ─── OS Traffic Counters ──────────────────────────────────
 
 /// Read rx/tx bytes from OS network interface counters.
@@ -393,6 +449,7 @@ async fn detect_dybervpn_interface() -> Option<String> {
 /// Import and parse a TOML config file
 #[tauri::command]
 async fn import_config(path: String) -> Result<TunnelConfig, String> {
+    validate_readable_path(&path, &["toml"])?;
     let content = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| format!("Failed to read {}: {}", path, e))?;
@@ -598,6 +655,7 @@ async fn get_peers(
     if config_path.is_empty() {
         return Ok(vec![]);
     }
+    validate_readable_path(&config_path, &["toml"])?;
 
     let output = Command::new(&state.dybervpn_bin)
         .args(["list-peers", "-c", &config_path, "--json"])
@@ -687,6 +745,7 @@ async fn check_config(
     path: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<String, String> {
+    validate_readable_path(&path, &["toml"])?;
     let output = Command::new(&state.dybervpn_bin)
         .args(["check", "-c", &path])
         .output()
@@ -887,6 +946,8 @@ async fn check_server_health(server_url: String) -> Result<String, String> {
         .trim_start_matches("https://")
         .to_string();
 
+    validate_network_target(&host_port, false)?;
+
     let mut stream = std::net::TcpStream::connect(&host_port)
         .map_err(|e| format!("Cannot connect to {}: {}", host_port, e))?;
 
@@ -927,6 +988,7 @@ async fn read_audit_log(
     config_path: String,
     max_entries: Option<usize>,
 ) -> Result<String, String> {
+    validate_readable_path(&config_path, &["toml"])?;
     let config_dir = std::path::Path::new(&config_path)
         .parent()
         .unwrap_or(std::path::Path::new("."));
@@ -957,6 +1019,7 @@ async fn read_audit_log(
 /// Read policy configuration from a tunnel config file
 #[tauri::command]
 async fn get_policy_config(config_path: String) -> Result<String, String> {
+    validate_readable_path(&config_path, &["toml"])?;
     let content = tokio::fs::read_to_string(&config_path)
         .await
         .map_err(|e| format!("Failed to read config: {}", e))?;
@@ -1110,6 +1173,9 @@ async fn get_metrics(metrics_url: Option<String>) -> Result<String, String> {
         .trim_start_matches("http://")
         .trim_start_matches("https://")
         .to_string();
+
+    // M12: metrics are read only from the local daemon.
+    validate_network_target(&host_port, true)?;
 
     let mut stream = match std::net::TcpStream::connect(&host_port) {
         Ok(s) => s,
@@ -1345,7 +1411,27 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_interface_name;
+    use super::{validate_network_target, validate_readable_path, valid_interface_name};
+
+    #[test]
+    fn readable_path_extension_allowlist() {
+        // M1: only allowed extensions may be read.
+        assert!(validate_readable_path("C:/cfg/server.toml", &["toml"]).is_ok());
+        assert!(validate_readable_path("/home/u/.ssh/id_rsa", &["toml"]).is_err());
+        assert!(validate_readable_path("/etc/passwd", &["toml"]).is_err());
+        assert!(validate_readable_path("audit.ndjson", &["toml"]).is_err());
+    }
+
+    #[test]
+    fn network_target_blocks_ssrf() {
+        // M12: link-local / cloud-metadata addresses are refused.
+        assert!(validate_network_target("169.254.169.254:80", false).is_err());
+        assert!(validate_network_target("10.0.0.5:8443", false).is_ok());
+        // Metrics are loopback-only.
+        assert!(validate_network_target("127.0.0.1:9090", true).is_ok());
+        assert!(validate_network_target("localhost:9090", true).is_ok());
+        assert!(validate_network_target("10.0.0.5:9090", true).is_err());
+    }
 
     #[test]
     fn accepts_legitimate_interface_names() {

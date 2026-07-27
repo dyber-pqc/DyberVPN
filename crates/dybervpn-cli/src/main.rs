@@ -212,9 +212,11 @@ enum Commands {
         #[arg(short, long)]
         server: String,
 
-        /// Enrollment token
+        /// Enrollment token. Prefer the DYBERVPN_ENROLL_TOKEN environment
+        /// variable — passing secrets on the command line exposes them to
+        /// other local users via the process list (security audit M11).
         #[arg(short, long)]
-        token: String,
+        token: Option<String>,
 
         /// Client name
         #[arg(short, long)]
@@ -286,6 +288,10 @@ enum Commands {
         /// Peer to reinstate (name, public key prefix, or VPN IP)
         #[arg(short, long)]
         peer: String,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 
     /// List all revoked and suspended keys
@@ -373,7 +379,19 @@ fn main() -> Result<()> {
             mode,
             output,
             insecure,
-        } => cmd_enroll(&server, &token, &name, &mode, &output, insecure),
+        } => {
+            // M11: resolve the token from --token or the env var, preferring the
+            // env var so the secret need not appear in argv.
+            let token = token
+                .or_else(|| std::env::var("DYBERVPN_ENROLL_TOKEN").ok())
+                .filter(|t| !t.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "enrollment token required: pass --token or set DYBERVPN_ENROLL_TOKEN"
+                    )
+                })?;
+            cmd_enroll(&server, &token, &name, &mode, &output, insecure)
+        }
         Commands::RevokeKey {
             config,
             peer,
@@ -387,7 +405,7 @@ fn main() -> Result<()> {
             expires,
             revoked_by,
         } => cmd_suspend_key(&config, &peer, expires.as_deref(), revoked_by.as_deref()),
-        Commands::ReinstateKey { config, peer } => cmd_reinstate_key(&config, &peer),
+        Commands::ReinstateKey { config, peer, yes } => cmd_reinstate_key(&config, &peer, yes),
         Commands::ListRevoked { config, json } => cmd_list_revoked(&config, json),
         Commands::SelfTest { json } => cmd_self_test(json),
         Commands::Connect { config, mode } => cmd_connect(&config, mode.as_deref()),
@@ -3107,11 +3125,30 @@ fn cmd_suspend_key(
 }
 
 /// Reinstate a previously revoked or suspended key
-fn cmd_reinstate_key(config_path: &Path, peer_identifier: &str) -> Result<()> {
+fn cmd_reinstate_key(config_path: &Path, peer_identifier: &str, skip_confirm: bool) -> Result<()> {
     use dybervpn_tunnel::revocation::{RevocationEngine, SecurityConfig as RevSecConfig};
 
     let (peer_key, peer_name) = resolve_peer_from_config(config_path, peer_identifier)?;
     let crl_path = get_crl_path(config_path)?;
+
+    // M5: reinstating un-revokes a key (a revocation rollback). Require explicit
+    // confirmation so it cannot happen silently.
+    if !skip_confirm {
+        println!("Reinstating (un-revoking) key for peer:");
+        println!("  Name:        {}", peer_name);
+        println!("  Public key:  {}...", hex::encode(&peer_key[..8]));
+        println!("  CRL file:    {}", crl_path.display());
+        println!();
+        print!("Confirm reinstatement? [y/N] ");
+        std::io::stdout().flush()?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
 
     let rev_cfg = RevSecConfig {
         crl_path: Some(crl_path.to_string_lossy().to_string()),
