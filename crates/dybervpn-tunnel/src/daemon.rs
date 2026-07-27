@@ -1164,12 +1164,48 @@ impl Daemon {
 
             match result_action {
                 ResultAction::TunnelPacket(decrypted) => {
-                    // ── Policy check on decrypted incoming traffic ──
                     let mut should_forward = true;
-                    if self.policy.is_enabled() {
-                        if let Some((_src_ip, dst_ip, dst_port, proto)) =
-                            policy::inspect_packet(&decrypted)
-                        {
+
+                    // Parse the inner IP header once, for both the anti-spoofing
+                    // check and the policy check below.
+                    let packet_info = policy::inspect_packet(&decrypted);
+
+                    // ── H2: cryptokey-routing / anti-spoofing ──
+                    // Every decrypted packet's inner source IP must fall within
+                    // the sending peer's allowed_ips. boringtun does not enforce
+                    // this — without it an authenticated peer could forge any
+                    // source identity (impersonating another peer or a LAN host)
+                    // and the traffic would still be routed/written to the TUN.
+                    // This runs regardless of whether the policy engine is
+                    // enabled (policy is off by default). A packet whose inner
+                    // header can't be parsed is dropped (fail closed).
+                    match packet_info {
+                        Some((src_ip, _, _, _)) if self.src_ip_allowed_for_peer(&key, src_ip) => {}
+                        Some((src_ip, _, _, _)) => {
+                            let peer_name =
+                                self.peers.get(&key).and_then(|p| p.name.as_deref());
+                            tracing::warn!(
+                                "Dropping spoofed packet from peer {}: inner source {} not in allowed_ips",
+                                hex::encode(&key[..4]),
+                                src_ip
+                            );
+                            self.audit.log_policy_decision(
+                                &key, peer_name, src_ip, src_ip, None, None, false,
+                                "src-ip-not-in-allowed-ips",
+                            );
+                            if let Some(peer) = self.peers.get_mut(&key) {
+                                peer.policy_denied_packets += 1;
+                            }
+                            should_forward = false;
+                        }
+                        None => {
+                            should_forward = false;
+                        }
+                    }
+
+                    // ── Policy check on decrypted incoming traffic ──
+                    if should_forward && self.policy.is_enabled() {
+                        if let Some((_src_ip, dst_ip, dst_port, proto)) = packet_info {
                             let peer_name = self.peers.get(&key).and_then(|p| p.name.as_deref());
                             let (action, rule_name) = self.policy.evaluate(
                                 &key,
@@ -1599,6 +1635,20 @@ impl Daemon {
         best_match.map(|(key, _)| key)
     }
 
+    /// H2: returns true if `src_ip` is within the peer's configured
+    /// `allowed_ips`. This is the cryptokey-routing check WireGuard requires
+    /// the caller to perform on decrypted packets — boringtun does not enforce
+    /// it, so without this a peer could spoof any source IP.
+    fn src_ip_allowed_for_peer(&self, key: &[u8; 32], src_ip: IpAddr) -> bool {
+        match self.peers.get(key) {
+            Some(peer) => peer
+                .allowed_ips
+                .iter()
+                .any(|(net, prefix)| Self::ip_in_network(src_ip, *net, *prefix)),
+            None => false,
+        }
+    }
+
     fn ip_in_network(ip: IpAddr, network: IpAddr, prefix: u8) -> bool {
         match (ip, network) {
             (IpAddr::V4(ip), IpAddr::V4(net)) => {
@@ -1716,6 +1766,83 @@ mod tests {
         assert!(daemon.is_tun_subnet(IpAddr::V4(Ipv4Addr::new(10, 200, 200, 0)), 24));
         assert!(!daemon.is_tun_subnet(IpAddr::V4(Ipv4Addr::new(10, 200, 200, 2)), 32));
         assert!(!daemon.is_tun_subnet(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24));
+    }
+
+    /// H2 regression: a decrypted packet's inner source IP is accepted only if
+    /// it falls within the sending peer's allowed_ips (cryptokey routing).
+    #[test]
+    fn src_ip_allowed_for_peer_blocks_spoofing() {
+        use x25519_dalek::{PublicKey, StaticSecret};
+
+        let config = TunnelConfig {
+            address: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            netmask: 24,
+            ..TunnelConfig::default()
+        };
+        let mut daemon = Daemon {
+            config,
+            config_path: None,
+            tun: None,
+            socket: None,
+            peers: HashMap::new(),
+            index_map: HashMap::new(),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            reload: Arc::new(AtomicBool::new(false)),
+            private_key: StaticSecret::from([1u8; 32]),
+            next_peer_index: 0,
+            is_server: true,
+            connector_mode: false,
+            connector_agent: None,
+            policy: PolicyEngine::disabled(),
+            revocation: RevocationEngine::disabled(),
+            audit: AuditLogger::disabled(),
+            last_revocation_check: Instant::now(),
+            last_crngt_check: Instant::now(),
+        };
+
+        let mk_peer = |index: u32, allowed_ips: Vec<(IpAddr, u8)>| PeerState {
+            tunn: Tunn::new(
+                StaticSecret::from([1u8; 32]),
+                PublicKey::from(&StaticSecret::from([(index as u8) + 2; 32])),
+                None,
+                None,
+                index,
+                None,
+            ),
+            endpoint: None,
+            allowed_ips,
+            last_activity: Instant::now(),
+            name: None,
+            tx_bytes: 0,
+            rx_bytes: 0,
+            forwarded_packets: 0,
+            policy_denied_packets: 0,
+            last_handshake: None,
+            session_established: true,
+            handshake_attempts: 0,
+            first_seen: Instant::now(),
+        };
+
+        // Peer A is authorized only for 10.0.0.2/32.
+        let key_a = [0xAAu8; 32];
+        daemon
+            .peers
+            .insert(key_a, mk_peer(0, vec![(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 32)]));
+
+        // Its own address is accepted; a spoofed source is rejected.
+        assert!(daemon.src_ip_allowed_for_peer(&key_a, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))));
+        assert!(!daemon.src_ip_allowed_for_peer(&key_a, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3))));
+        assert!(!daemon.src_ip_allowed_for_peer(&key_a, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+
+        // An unknown peer key is rejected.
+        assert!(!daemon.src_ip_allowed_for_peer(&[0xBBu8; 32], IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))));
+
+        // A gateway peer allowed 0.0.0.0/0 accepts any source.
+        let key_gw = [0xCCu8; 32];
+        daemon
+            .peers
+            .insert(key_gw, mk_peer(1, vec![(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)]));
+        assert!(daemon.src_ip_allowed_for_peer(&key_gw, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
     }
 
     // ─── Two-Daemon Integration Tests ───────────────────────────────────
