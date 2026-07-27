@@ -117,9 +117,17 @@ async fn verify_binary(bin: &PathBuf) {
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            eprintln!("[warn] dybervpn version exited with {}: {}", out.status, stderr.trim());
+            eprintln!(
+                "[warn] dybervpn version exited with {}: {}",
+                out.status,
+                stderr.trim()
+            );
         }
-        Err(e) => eprintln!("[error] Cannot execute dybervpn binary at {}: {}", bin.display(), e),
+        Err(e) => eprintln!(
+            "[error] Cannot execute dybervpn binary at {}: {}",
+            bin.display(),
+            e
+        ),
     }
 }
 
@@ -144,8 +152,12 @@ fn find_dybervpn_binary() -> PathBuf {
     candidates.push(manifest_dir.join("../../dybervpn/target/release/dybervpn"));
 
     // 3. Hardcoded dev paths (multiple drive letters)
-    candidates.push(PathBuf::from(r"H:\dybervpn\dybervpn\target\release\dybervpn.exe"));
-    candidates.push(PathBuf::from(r"C:\dybervpn\dybervpn\target\release\dybervpn.exe"));
+    candidates.push(PathBuf::from(
+        r"H:\dybervpn\dybervpn\target\release\dybervpn.exe",
+    ));
+    candidates.push(PathBuf::from(
+        r"C:\dybervpn\dybervpn\target\release\dybervpn.exe",
+    ));
 
     // 4. System install paths
     candidates.push(PathBuf::from(r"C:\Program Files\DyberVPN\dybervpn.exe"));
@@ -159,7 +171,9 @@ fn find_dybervpn_binary() -> PathBuf {
         }
     }
 
-    eprintln!("[warn] DyberVPN binary not found in any candidate path, falling back to PATH lookup");
+    eprintln!(
+        "[warn] DyberVPN binary not found in any candidate path, falling back to PATH lookup"
+    );
     PathBuf::from("dybervpn")
 }
 
@@ -363,11 +377,7 @@ fn parse_cli_state(s: &str) -> TunnelState {
 
 /// Query the CLI for tunnel state, properly mapping all possible state strings.
 async fn query_tunnel_state(bin: &PathBuf) -> TunnelState {
-    let output = match Command::new(bin)
-        .args(["status", "--json"])
-        .output()
-        .await
-    {
+    let output = match Command::new(bin).args(["status", "--json"]).output().await {
         Ok(o) => o,
         Err(e) => {
             eprintln!("[warn] query_tunnel_state: CLI execution failed: {}", e);
@@ -530,18 +540,21 @@ async fn connect_tunnel(
     processes.insert(tunnel_id.clone(), child);
 
     // Record connect time
-    state.connect_times.lock().await.insert(tunnel_id.clone(), Instant::now());
+    state
+        .connect_times
+        .lock()
+        .await
+        .insert(tunnel_id.clone(), Instant::now());
 
     // Try to determine interface name from config
     let iface_name = if !config_path.is_empty() {
         tokio::fs::read_to_string(&config_path)
             .await
             .ok()
-            .and_then(|content| {
-                content.parse::<toml::Table>().ok()
-            })
+            .and_then(|content| content.parse::<toml::Table>().ok())
             .and_then(|table| {
-                table.get("interface")
+                table
+                    .get("interface")
                     .and_then(|i| i.get("name"))
                     .and_then(|v| v.as_str())
                     .map(String::from)
@@ -553,7 +566,11 @@ async fn connect_tunnel(
     } else {
         "dvpn0".to_string()
     };
-    state.interface_names.lock().await.insert(tunnel_id, iface_name);
+    state
+        .interface_names
+        .lock()
+        .await
+        .insert(tunnel_id, iface_name);
 
     Ok(())
 }
@@ -614,11 +631,17 @@ async fn get_status(
     drop(processes);
 
     // Get interface name with warning on fallback
-    let iface = state.interface_names.lock().await
+    let iface = state
+        .interface_names
+        .lock()
+        .await
         .get(&tunnel_id)
         .cloned()
         .unwrap_or_else(|| {
-            eprintln!("[warn] get_status: no interface name for tunnel '{}'", tunnel_id);
+            eprintln!(
+                "[warn] get_status: no interface name for tunnel '{}'",
+                tunnel_id
+            );
             "dvpn0".to_string()
         });
 
@@ -630,7 +653,10 @@ async fn get_status(
     let (rx, tx) = read_interface_traffic(&iface).await;
 
     // Compute uptime from connect time
-    let uptime_secs = state.connect_times.lock().await
+    let uptime_secs = state
+        .connect_times
+        .lock()
+        .await
         .get(&tunnel_id)
         .map(|t| t.elapsed().as_secs())
         .unwrap_or(0);
@@ -687,21 +713,23 @@ async fn get_peers(
             for (i, p) in peer_list.iter().enumerate() {
                 peers.push(PeerInfo {
                     index: i,
-                    public_key: p.get("public_key")
+                    public_key: p
+                        .get("public_key")
                         .and_then(|v| v.as_str())
                         .unwrap_or("—")
                         .to_string(),
-                    pq_public_key: p.get("pq_public_key")
+                    pq_public_key: p
+                        .get("pq_public_key")
                         .and_then(|v| v.as_str())
                         .map(String::from),
-                    allowed_ips: p.get("allowed_ips")
+                    allowed_ips: p
+                        .get("allowed_ips")
                         .and_then(|v| v.as_str())
                         .unwrap_or("0.0.0.0/0")
                         .to_string(),
-                    endpoint: p.get("endpoint")
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
-                    keepalive: p.get("persistent_keepalive")
+                    endpoint: p.get("endpoint").and_then(|v| v.as_str()).map(String::from),
+                    keepalive: p
+                        .get("persistent_keepalive")
                         .and_then(|v| v.as_integer())
                         .unwrap_or(25) as u16,
                 });
@@ -721,10 +749,7 @@ async fn ping_endpoint(host: String) -> Result<Option<f64>, String> {
 
 /// Generate keys via dybervpn genkey
 #[tauri::command]
-async fn generate_keys(
-    mode: String,
-    state: State<'_, Arc<AppState>>,
-) -> Result<String, String> {
+async fn generate_keys(mode: String, state: State<'_, Arc<AppState>>) -> Result<String, String> {
     let output = Command::new(&state.dybervpn_bin)
         .args(["genkey", "-m", &mode])
         .output()
@@ -732,8 +757,7 @@ async fn generate_keys(
         .map_err(|e| format!("Key generation failed: {}", e))?;
 
     if output.status.success() {
-        String::from_utf8(output.stdout)
-            .map_err(|e| format!("Invalid output: {}", e))
+        String::from_utf8(output.stdout).map_err(|e| format!("Invalid output: {}", e))
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
@@ -741,10 +765,7 @@ async fn generate_keys(
 
 /// Validate a config file via dybervpn check
 #[tauri::command]
-async fn check_config(
-    path: String,
-    state: State<'_, Arc<AppState>>,
-) -> Result<String, String> {
+async fn check_config(path: String, state: State<'_, Arc<AppState>>) -> Result<String, String> {
     validate_readable_path(&path, &["toml"])?;
     let output = Command::new(&state.dybervpn_bin)
         .args(["check", "-c", &path])
@@ -786,8 +807,7 @@ async fn get_version(state: State<'_, Arc<AppState>>) -> Result<String, String> 
         .await
         .map_err(|e| format!("Version check failed: {}", e))?;
 
-    String::from_utf8(output.stdout)
-        .map_err(|e| format!("Invalid output: {}", e))
+    String::from_utf8(output.stdout).map_err(|e| format!("Invalid output: {}", e))
 }
 
 // ─── Fleet Management Commands ───────────────────────────
@@ -805,11 +825,16 @@ async fn enroll_device(
     let output = Command::new(&state.dybervpn_bin)
         .args([
             "enroll",
-            "--server", &server,
-            "--token", &token,
-            "--name", &name,
-            "--mode", &mode,
-            "--output", &output_dir,
+            "--server",
+            &server,
+            "--token",
+            &token,
+            "--name",
+            &name,
+            "--mode",
+            &mode,
+            "--output",
+            &output_dir,
         ])
         .output()
         .await
@@ -837,9 +862,12 @@ async fn revoke_peer(
 ) -> Result<String, String> {
     let mut args = vec![
         "revoke-key".to_string(),
-        "-c".to_string(), config_path,
-        "-p".to_string(), peer,
-        "-r".to_string(), reason,
+        "-c".to_string(),
+        config_path,
+        "-p".to_string(),
+        peer,
+        "-r".to_string(),
+        reason,
         "--yes".to_string(),
     ];
     if !revoked_by.is_empty() {
@@ -856,7 +884,11 @@ async fn revoke_peer(
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
-        Err(format!("{}\n{}", String::from_utf8_lossy(&output.stderr), String::from_utf8_lossy(&output.stdout)))
+        Err(format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        ))
     }
 }
 
@@ -871,8 +903,10 @@ async fn suspend_peer(
 ) -> Result<String, String> {
     let mut args = vec![
         "suspend-key".to_string(),
-        "-c".to_string(), config_path,
-        "-p".to_string(), peer,
+        "-c".to_string(),
+        config_path,
+        "-p".to_string(),
+        peer,
     ];
     if !expires.is_empty() {
         args.push("--expires".to_string());
@@ -892,7 +926,11 @@ async fn suspend_peer(
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
-        Err(format!("{}\n{}", String::from_utf8_lossy(&output.stderr), String::from_utf8_lossy(&output.stdout)))
+        Err(format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        ))
     }
 }
 
@@ -912,7 +950,11 @@ async fn reinstate_peer(
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
-        Err(format!("{}\n{}", String::from_utf8_lossy(&output.stderr), String::from_utf8_lossy(&output.stdout)))
+        Err(format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        ))
     }
 }
 
@@ -931,7 +973,11 @@ async fn list_revoked(
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
-        Err(format!("{}\n{}", String::from_utf8_lossy(&output.stderr), String::from_utf8_lossy(&output.stdout)))
+        Err(format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        ))
     }
 }
 
@@ -984,10 +1030,7 @@ async fn check_server_health(server_url: String) -> Result<String, String> {
 
 /// Read the NDJSON audit log file and return the last N entries as JSON array
 #[tauri::command]
-async fn read_audit_log(
-    config_path: String,
-    max_entries: Option<usize>,
-) -> Result<String, String> {
+async fn read_audit_log(config_path: String, max_entries: Option<usize>) -> Result<String, String> {
     validate_readable_path(&config_path, &["toml"])?;
     let config_dir = std::path::Path::new(&config_path)
         .parent()
@@ -1012,8 +1055,7 @@ async fn read_audit_log(
         }
     }
 
-    serde_json::to_string(&entries)
-        .map_err(|e| format!("JSON serialization error: {}", e))
+    serde_json::to_string(&entries).map_err(|e| format!("JSON serialization error: {}", e))
 }
 
 /// Read policy configuration from a tunnel config file
@@ -1028,8 +1070,14 @@ async fn get_policy_config(config_path: String) -> Result<String, String> {
         .parse()
         .map_err(|e| format!("Invalid TOML: {}", e))?;
 
-    let policy = table.get("policy").cloned().unwrap_or(toml::Value::Table(toml::Table::new()));
-    let security = table.get("security").cloned().unwrap_or(toml::Value::Table(toml::Table::new()));
+    let policy = table
+        .get("policy")
+        .cloned()
+        .unwrap_or(toml::Value::Table(toml::Table::new()));
+    let security = table
+        .get("security")
+        .cloned()
+        .unwrap_or(toml::Value::Table(toml::Table::new()));
 
     let result = serde_json::json!({
         "policy": toml_to_json(&policy),
@@ -1065,7 +1113,11 @@ async fn run_posture_check() -> Result<String, String> {
     // 1. OS Version check
     {
         let output = Command::new("powershell")
-            .args(["-NoProfile", "-Command", "[System.Environment]::OSVersion.Version | ConvertTo-Json"])
+            .args([
+                "-NoProfile",
+                "-Command",
+                "[System.Environment]::OSVersion.Version | ConvertTo-Json",
+            ])
             .output()
             .await;
 
@@ -1076,7 +1128,19 @@ async fn run_posture_check() -> Result<String, String> {
                     let major = val["Major"].as_u64().unwrap_or(0);
                     let build = val["Build"].as_u64().unwrap_or(0);
                     let supported = (major == 10 && build >= 19041) || major > 10;
-                    (supported, format!("Windows {}.{} — {}", major, build, if supported { "supported" } else { "below minimum" }))
+                    (
+                        supported,
+                        format!(
+                            "Windows {}.{} — {}",
+                            major,
+                            build,
+                            if supported {
+                                "supported"
+                            } else {
+                                "below minimum"
+                            }
+                        ),
+                    )
                 } else {
                     (false, "Could not parse OS version".to_string())
                 }
@@ -1089,7 +1153,11 @@ async fn run_posture_check() -> Result<String, String> {
     // 2. Firewall check
     {
         let output = Command::new("powershell")
-            .args(["-NoProfile", "-Command", "(Get-NetFirewallProfile -Profile Domain,Public,Private).Enabled | ConvertTo-Json"])
+            .args([
+                "-NoProfile",
+                "-Command",
+                "(Get-NetFirewallProfile -Profile Domain,Public,Private).Enabled | ConvertTo-Json",
+            ])
             .output()
             .await;
 
@@ -1097,7 +1165,17 @@ async fn run_posture_check() -> Result<String, String> {
             Ok(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 let all_enabled = text.contains("true") && !text.contains("false");
-                (all_enabled, format!("Windows Firewall: {}", if all_enabled { "all profiles enabled" } else { "some profiles disabled" }))
+                (
+                    all_enabled,
+                    format!(
+                        "Windows Firewall: {}",
+                        if all_enabled {
+                            "all profiles enabled"
+                        } else {
+                            "some profiles disabled"
+                        }
+                    ),
+                )
             }
             _ => (false, "Could not query firewall status".to_string()),
         };
@@ -1115,7 +1193,17 @@ async fn run_posture_check() -> Result<String, String> {
             Ok(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 let encrypted = text.contains('1');
-                (encrypted, format!("BitLocker C: {}", if encrypted { "protected" } else { "not protected" }))
+                (
+                    encrypted,
+                    format!(
+                        "BitLocker C: {}",
+                        if encrypted {
+                            "protected"
+                        } else {
+                            "not protected"
+                        }
+                    ),
+                )
             }
             _ => (false, "Could not query BitLocker status".to_string()),
         };
@@ -1135,7 +1223,10 @@ async fn run_posture_check() -> Result<String, String> {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                     let av = val["AntivirusEnabled"].as_bool().unwrap_or(false);
                     let rtp = val["RealTimeProtectionEnabled"].as_bool().unwrap_or(false);
-                    (av && rtp, format!("Windows Defender: AV={}, RealTime={}", av, rtp))
+                    (
+                        av && rtp,
+                        format!("Windows Defender: AV={}, RealTime={}", av, rtp),
+                    )
                 } else {
                     (false, "Could not parse Defender status".to_string())
                 }
@@ -1148,9 +1239,20 @@ async fn run_posture_check() -> Result<String, String> {
     // 5. Screen lock
     checks.push(serde_json::json!({"name": "Screen Lock", "category": "security", "passed": true, "weight": 15, "detail": "Screen lock: using system defaults"}));
 
-    let total_weight: u32 = checks.iter().map(|c| c["weight"].as_u64().unwrap_or(0) as u32).sum();
-    let earned: u32 = checks.iter().filter(|c| c["passed"].as_bool().unwrap_or(false)).map(|c| c["weight"].as_u64().unwrap_or(0) as u32).sum();
-    let score = if total_weight > 0 { (earned * 100) / total_weight } else { 100 };
+    let total_weight: u32 = checks
+        .iter()
+        .map(|c| c["weight"].as_u64().unwrap_or(0) as u32)
+        .sum();
+    let earned: u32 = checks
+        .iter()
+        .filter(|c| c["passed"].as_bool().unwrap_or(false))
+        .map(|c| c["weight"].as_u64().unwrap_or(0) as u32)
+        .sum();
+    let score = if total_weight > 0 {
+        (earned * 100) / total_weight
+    } else {
+        100
+    };
 
     let result = serde_json::json!({
         "score": score,
@@ -1188,14 +1290,23 @@ async fn get_metrics(metrics_url: Option<String>) -> Result<String, String> {
         }
     };
 
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(3))).ok();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .ok();
 
-    let request = format!("GET /metrics HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", host_port);
-    stream.write_all(request.as_bytes()).map_err(|e| format!("Request failed: {}", e))?;
+    let request = format!(
+        "GET /metrics HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        host_port
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("Request failed: {}", e))?;
     stream.flush().ok();
 
     let mut response = String::new();
-    stream.read_to_string(&mut response).map_err(|e| format!("Read failed: {}", e))?;
+    stream
+        .read_to_string(&mut response)
+        .map_err(|e| format!("Read failed: {}", e))?;
 
     let body = response
         .split("\r\n\r\n")
@@ -1236,32 +1347,39 @@ async fn stats_emitter_loop(handle: AppHandle, state: Arc<AppState>) {
         let connected = matches!(cli_state, TunnelState::Running);
 
         for tunnel_id in &tunnel_ids {
-            let iface = state.interface_names.lock().await
+            let iface = state
+                .interface_names
+                .lock()
+                .await
                 .get(tunnel_id)
                 .cloned()
                 .unwrap_or_else(|| "dvpn0".to_string());
 
             let (rx, tx) = read_interface_traffic(&iface).await;
 
-            let uptime_secs = state.connect_times.lock().await
+            let uptime_secs = state
+                .connect_times
+                .lock()
+                .await
                 .get(tunnel_id)
                 .map(|t| t.elapsed().as_secs())
                 .unwrap_or(0);
 
-            stats_map.insert(tunnel_id.clone(), TunnelStatus {
-                connected,
-                state: cli_state.clone(),
-                rx,
-                tx,
-                uptime_secs,
-                latency_ms: None,
-                interface_name: iface,
-            });
+            stats_map.insert(
+                tunnel_id.clone(),
+                TunnelStatus {
+                    connected,
+                    state: cli_state.clone(),
+                    rx,
+                    tx,
+                    uptime_secs,
+                    latency_ms: None,
+                    interface_name: iface,
+                },
+            );
         }
 
-        let _ = handle.emit("tunnel-stats", TunnelStatsEvent {
-            tunnels: stats_map,
-        });
+        let _ = handle.emit("tunnel-stats", TunnelStatsEvent { tunnels: stats_map });
     }
 }
 
@@ -1411,7 +1529,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_network_target, validate_readable_path, valid_interface_name};
+    use super::{valid_interface_name, validate_network_target, validate_readable_path};
 
     #[test]
     fn readable_path_extension_allowlist() {
@@ -1435,7 +1553,15 @@ mod tests {
 
     #[test]
     fn accepts_legitimate_interface_names() {
-        for ok in ["dvpn0", "wg0", "eth0", "tun-1", "my_iface", "A", &"x".repeat(32)] {
+        for ok in [
+            "dvpn0",
+            "wg0",
+            "eth0",
+            "tun-1",
+            "my_iface",
+            "A",
+            &"x".repeat(32),
+        ] {
             assert!(valid_interface_name(ok), "should accept {ok:?}");
         }
     }
