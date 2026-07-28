@@ -109,11 +109,7 @@ pub async fn assess_posture(config: &PostureConfig) -> PostureResult {
 
     let total_weight: u32 = checks.iter().map(|c| c.weight).sum();
     let earned: u32 = checks.iter().filter(|c| c.passed).map(|c| c.weight).sum();
-    let score = if total_weight > 0 {
-        (earned * 100) / total_weight
-    } else {
-        100
-    };
+    let score = (earned * 100).checked_div(total_weight).unwrap_or(100);
 
     PostureResult {
         score,

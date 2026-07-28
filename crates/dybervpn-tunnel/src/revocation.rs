@@ -361,9 +361,16 @@ impl RevocationEngine {
 
     /// Register a peer as "first seen" for key age tracking
     pub fn register_peer(&mut self, peer_key: &[u8; 32]) {
+        use std::collections::hash_map::Entry;
         let key_hex = hex::encode(peer_key);
-        if !self.peer_first_seen.contains_key(&key_hex) {
-            self.peer_first_seen.insert(key_hex, now_unix_secs());
+        let inserted = match self.peer_first_seen.entry(key_hex) {
+            Entry::Vacant(e) => {
+                e.insert(now_unix_secs());
+                true
+            }
+            Entry::Occupied(_) => false,
+        };
+        if inserted {
             // Persist so the key's age is measured from its true first-seen
             // time, not from when the current process started (M4).
             self.save_seen();

@@ -49,7 +49,7 @@ impl ServiceRegistry {
         }
 
         // Sort by prefix length descending (longest-prefix-match first)
-        table.sort_by(|a, b| b.prefix.cmp(&a.prefix));
+        table.sort_by_key(|e| std::cmp::Reverse(e.prefix));
 
         tracing::debug!(
             "Registry updated: {} total routes ({} for connector {})",
